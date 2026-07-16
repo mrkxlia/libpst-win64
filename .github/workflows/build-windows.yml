@@ -105,10 +105,17 @@ jobs:
           # ため pkg-config --static の出力を LIBS に加える。
           GSF_STATIC="$(pkg-config --static --libs libgsf-1)"
           echo "GSF_STATIC=$GSF_STATIC"
-          STATIC_LIBS="-lsystre -ltre $GSF_STATIC -lintl -liconv"
+          # glib2 のヘッダは GLIB_STATIC_COMPILATION なしだと dllimport
+          # (__imp_g_*) 参照を生成する。また MSYS2 の libgsf-1.a 自体が
+          # __imp_g_* を参照しており、__imp_ シンボルではアーカイブから
+          # 実体オブジェクトが抽出されないため、glib系は --whole-archive で
+          # 全量取り込み、ld の dllimport フィックスアップに解決させる。
+          STATIC_LIBS="-lsystre -ltre -Wl,--whole-archive -lgsf-1 -lgobject-2.0 -lglib-2.0 -Wl,--no-whole-archive $GSF_STATIC -lintl -liconv"
           make -C src -j"$(nproc)" LDFLAGS="-all-static" LIBS="$STATIC_LIBS" \
+               CPPFLAGS="-DGLIB_STATIC_COMPILATION" \
             || { echo '=== retry serially for readable errors ==='; \
-                 make -C src LDFLAGS="-all-static" LIBS="$STATIC_LIBS"; }
+                 make -C src LDFLAGS="-all-static" LIBS="$STATIC_LIBS" \
+                      CPPFLAGS="-DGLIB_STATIC_COMPILATION"; }
 
       - name: verify static linkage
         run: |
