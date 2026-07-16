@@ -82,12 +82,15 @@ jobs:
           # 静的リンク時は libtre.a が libintl_gettext を参照するため
           # -lintl -liconv も必要 (run 29516136428 の config.log で確認)。
           export LIBS="-lsystre -ltre -lintl -liconv"
+          # readpst.c:673 の shmdt は HAVE_SEMAPHORE_H だけでガードされており
+          # (shmget側と非対称)、SysV shm の無い MINGW64 ではコンパイルエラーに
+          # なる。semaphore.h を「無し」と扱わせて fork/共有メモリ系コードを
+          # 丸ごと無効化する (Windows には fork も無く、単一プロセス動作が正)。
           ./configure \
+            ac_cv_header_semaphore_h=no \
             --enable-python=no \
             --enable-dii=no \
-            || { echo '=== config.log: regexec section ==='; \
-                 grep -n -B2 -A30 'regexec' config.log | tail -n 150; \
-                 exit 1; }
+            || { echo '=== config.log tail ==='; tail -n 100 config.log; exit 1; }
 
       - name: make
         run: |
