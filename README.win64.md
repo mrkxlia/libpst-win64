@@ -1,8 +1,8 @@
-# libpst-win64 — Windows向け readpst.exe 自前ビルドフォーク
+# libpst-win64 — Windows向け readpst.exe ビルドフォーク
 
 このリポジトリは [pst-format/libpst](https://github.com/pst-format/libpst) のフォークであり、
-knowledge-baton プロジェクトの ADR-046 (PST展開readpstのWindows導入経路) に基づいて、
-**Windows (x86_64) 向けの `readpst.exe` を自前でビルド・配布する**ことだけを目的とする。
+**Windows (x86_64) 上で PST ファイルを扱うための `readpst.exe` を自前でビルド・配布する**
+ことを目的とする。
 
 ## 上流との関係
 
@@ -37,8 +37,8 @@ Get-FileHash readpst.exe -Algorithm SHA256
 # 表示されたハッシュが Release ページの SHA256SUMS と一致することを確認する
 ```
 
-検証後、`readpst.exe` を PATH の通ったディレクトリへ配置し、knowledge-baton 側で
-`kb doctor` を実行して `readpst: ok` になることを確認する。
+検証後、`readpst.exe` を PATH の通ったディレクトリへ配置し、`readpst -V` で
+バージョンが表示されることを確認する。
 
 ## ライセンス
 
@@ -48,6 +48,6 @@ Get-FileHash readpst.exe -Algorithm SHA256
 
 ## 免責
 
-- 実物の `.pst` ファイルでの動作検証は knowledge-baton プロジェクトの Deny リスト
-  (実メール禁止) により実施していない。CI 上では `readpst -V` による起動確認までを行う
+- CI 上では `readpst -V` による起動確認と静的リンク検証までを行う。実際の `.pst`
+  ファイルでの動作は利用者側で確認すること
 - 上流が新バージョンをリリースした場合は、本フォークで再ビルド・再検証が必要

@@ -1,7 +1,6 @@
 name: Build readpst.exe for Windows (x86_64, MSYS2/MINGW64)
 
-# knowledge-baton ADR-046 / BL-127:
-# 社内Windows環境向けに readpst.exe を自前ビルドする。
+# Windows で PST ファイルを扱うための readpst.exe を自前ビルドする。
 # ソースは本フォーク (上流: pst-format/libpst) のみを使い、
 # ビルド環境・依存ライブラリは MSYS2 の公式パッケージで解決する。
 # 可能な限り静的リンクし、単一exe (または最小限のDLL同梱) を成果物とする。
@@ -11,6 +10,9 @@ on:
   push:
     tags:
       - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -34,7 +36,6 @@ jobs:
             mingw-w64-x86_64-libiconv
             mingw-w64-x86_64-zlib
             mingw-w64-x86_64-libgsf
-            mingw-w64-x86_64-libtre-git
             mingw-w64-x86_64-libsystre
 
       - name: autoreconf
