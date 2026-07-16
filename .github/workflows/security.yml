@@ -1,0 +1,198 @@
+name: Security checks (fuzzing, ASAN/UBSAN, static analysis)
+
+# フェーズ2A: 信頼できない .pst を解析する C パーサーのメモリ安全性検証。
+# - fuzz: libFuzzer (clang) でコアパース経路と RTF 展開を短時間 fuzz
+# - asan-ubsan: 修正済みバグの再現コーパスを ASAN+UBSAN で再生 (回帰防止)
+# - static-analysis: cppcheck / clang-tidy の指摘を重大度付きで一覧化
+
+on:
+  push:
+    branches:
+      - win64-build
+      - claude/new-session-gpnx2m
+    paths:
+      - "src/**"
+      - "fuzz/**"
+      - "regression/fuzz-corpus/**"
+      - ".github/workflows/security.yml"
+      - "configure.ac"
+  pull_request:
+    paths:
+      - "src/**"
+      - "fuzz/**"
+      - "regression/fuzz-corpus/**"
+      - ".github/workflows/security.yml"
+      - "configure.ac"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COMMON_SRCS: src/debug.c src/libpst.c src/libstrfunc.c src/lzfu.c src/timeconv.c src/vbuf.c
+  SAN_OPTS: allocator_may_return_null=1
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm autoconf automake libtool \
+            autoconf-archive gettext autopoint pkg-config zlib1g-dev libgsf-1-dev
+
+      - name: generate config.h
+        run: |
+          autoreconf -fiv
+          ./configure --enable-python=no --enable-dii=no
+
+      - name: build harnesses
+        run: |
+          set -x
+          # NOTE on -fno-sanitize=alignment: libpst.h wraps the ENTIRE public
+          # interface, including in-memory trees (pst_desc_tree, pst_item,
+          # pst_file), in `#pragma pack(1)`. Every pointer field therefore sits
+          # at an unaligned offset, so UBSan's alignment check fires on almost
+          # every access. On x86_64 these loads are safe; the check is excluded
+          # so it does not drown out genuine findings. The packing is a real
+          # portability risk on strict-alignment targets, but removing it is an
+          # ABI change to the public headers and is tracked as a reported issue
+          # rather than changed here.
+          SAN="-fsanitize=fuzzer,address,undefined -fno-sanitize=alignment -fno-sanitize-recover=undefined"
+          clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SAN \
+            fuzz/fuzz_lzfu.c src/lzfu.c src/debug.c -o fuzz_lzfu
+          clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SAN \
+            fuzz/fuzz_pst_open.c $COMMON_SRCS -lz -o fuzz_pst_open
+
+      - name: fuzz pst_lzfu_decompress (~5 min)
+        env:
+          ASAN_OPTIONS: ${{ env.SAN_OPTS }}
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          mkdir -p fuzz_run_lzfu
+          cp fuzz/corpus/* fuzz_run_lzfu/ 2>/dev/null || true
+          cp regression/fuzz-corpus/* fuzz_run_lzfu/ 2>/dev/null || true
+          ./fuzz_lzfu -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
+            -artifact_prefix=lzfu- fuzz_run_lzfu
+
+      - name: fuzz core parse path (~5 min)
+        env:
+          ASAN_OPTIONS: ${{ env.SAN_OPTS }}
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          mkdir -p fuzz_run_pst
+          ./fuzz_pst_open -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
+            -artifact_prefix=pst- fuzz_run_pst
+
+      - name: upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            lzfu-*
+            pst-*
+          if-no-files-found: ignore
+
+  asan-ubsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm autoconf automake libtool \
+            autoconf-archive gettext autopoint pkg-config zlib1g-dev libgsf-1-dev
+
+      - name: generate config.h
+        run: |
+          autoreconf -fiv
+          ./configure --enable-python=no --enable-dii=no
+
+      - name: build harnesses (ASAN+UBSAN)
+        run: |
+          # A libFuzzer binary given file arguments replays each file once
+          # through LLVMFuzzerTestOneInput, so the same harnesses double as
+          # sanitizer replay drivers for the pinned corpus.
+          # -fno-sanitize=alignment: see the fuzz job for why the packed
+          # public structs make the alignment check unusable here.
+          SANF="-fsanitize=fuzzer,address,undefined -fno-sanitize=alignment -fno-sanitize-recover=undefined"
+          clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SANF \
+            fuzz/fuzz_lzfu.c src/lzfu.c src/debug.c -o replay_lzfu
+          clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SANF \
+            fuzz/fuzz_pst_open.c $COMMON_SRCS -lz -o replay_pst_full
+
+      - name: replay pinned regression corpus under sanitizers
+        env:
+          ASAN_OPTIONS: ${{ env.SAN_OPTS }}:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          shopt -s nullglob
+          files=(regression/fuzz-corpus/* fuzz/corpus/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no corpus files to replay"; exit 0
+          fi
+          echo "replaying ${#files[@]} inputs through both harnesses"
+          # Each harness runs the fixed inputs (libFuzzer replays argv files).
+          ./replay_lzfu "${files[@]}"
+          ./replay_pst_full "${files[@]}"
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck clang-tidy clang bear \
+            autoconf automake libtool autoconf-archive gettext autopoint \
+            pkg-config zlib1g-dev libgsf-1-dev
+
+      - name: generate config.h + compile_commands.json
+        run: |
+          autoreconf -fiv
+          ./configure --enable-python=no --enable-dii=no
+          bear -- make -C src || true
+
+      - name: cppcheck (report only, never fails the job)
+        run: |
+          echo "## cppcheck findings" >> "$GITHUB_STEP_SUMMARY"
+          cppcheck --enable=all --inconclusive --std=c11 \
+            --suppress=missingIncludeSystem \
+            --template='{severity}: {file}:{line}: {id}: {message}' \
+            src/*.c 2> cppcheck.txt || true
+          # Severity histogram
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cut -d: -f1 cppcheck.txt | sort | uniq -c | sort -rn >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>full cppcheck output</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat cppcheck.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: clang-tidy (report only, never fails the job)
+        run: |
+          echo "## clang-tidy findings (core C sources)" >> "$GITHUB_STEP_SUMMARY"
+          : > clang-tidy.txt
+          for f in src/libpst.c src/lzfu.c src/libstrfunc.c src/vbuf.c src/timeconv.c src/debug.c; do
+            clang-tidy "$f" -p . -- -DHAVE_CONFIG_H -I . -I src >> clang-tidy.txt 2>/dev/null || true
+          done
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -oE 'warning: .*\[[a-z0-9.-]+\]$' clang-tidy.txt | \
+            sed -E 's/.*(\[[a-z0-9.-]+\])$/\1/' | sort | uniq -c | sort -rn | head -40 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: upload static-analysis reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis
+          path: |
+            cppcheck.txt
+            clang-tidy.txt
+          if-no-files-found: ignore

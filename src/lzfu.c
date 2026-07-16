@@ -48,6 +48,14 @@ char* pst_lzfu_decompress(char* rtfcomp, uint32_t compsize, size_t *size) {
 	uint32_t in_ptr;
 	uint32_t in_size;
 
+	// The compressed block must be at least large enough to hold the
+	// lzfu header; a shorter (truncated or malformed) block would cause
+	// the header memcpy below to read past the end of the input buffer.
+	if (!rtfcomp || compsize < sizeof(lzfuhdr)) {
+		*size = 0;
+		return NULL;
+	}
+
 	memcpy(dict, LZFU_INITDICT, LZFU_INITLENGTH);
 	memset(dict + LZFU_INITLENGTH, 0, sizeof(dict) - LZFU_INITLENGTH);
 	dict_length = LZFU_INITLENGTH;
@@ -62,8 +70,21 @@ char* pst_lzfu_decompress(char* rtfcomp, uint32_t compsize, size_t *size) {
 	//printf("compressed: %s\n", (lzfuhdr.dwMagic == LZFU_COMPRESSED ? "yes" : "no"));
 	//printf("CRC       : %#" PRIx32 "\n", lzfuhdr.dwCRC);
 	//printf("\n");
+	// cbRawSize is an attacker-controlled 32-bit field taken straight from
+	// the (possibly hostile) input, so a malformed block can request a
+	// multi-gigabyte allocation from only a few input bytes. The LZFU format
+	// can expand the compressed data by at most ~8x (each 2-byte dictionary
+	// reference emits at most 17 output bytes, plus one flag byte per eight
+	// tokens), so cap the output buffer at a safe upper bound derived from
+	// compsize. Legitimate blocks are well under this bound, so this never
+	// truncates valid output; the loop below is already guarded by
+	// out_ptr < out_size.
 	out_size = lzfuhdr.cbRawSize;
-	out_buf  = (char*)pst_malloc(out_size);
+	{
+		uint64_t max_out = (uint64_t)compsize * 17u + 16u;
+		if ((uint64_t)out_size > max_out) out_size = (uint32_t)max_out;
+	}
+	out_buf  = (char*)pst_malloc(out_size ? out_size : 1);
 	in_ptr	 = sizeof(lzfuhdr);
 	// Make sure to correct lzfuhdr.cbSize with 4 bytes before comparing
 	// to compsize
