@@ -113,13 +113,19 @@ jobs:
       - name: package with bundled DLLs
         run: |
           set -e
+          # libtool は src/readpst.exe をラッパーとして生成し、実体は
+          # src/.libs/readpst.exe に置く (run 29518329513 で確認)。
+          # 配布・依存解析はラッパーではなく実体に対して行う。
+          EXE=src/.libs/readpst.exe
+          [ -f "$EXE" ] || EXE=src/readpst.exe
+          echo "packaging: $EXE"
           mkdir -p dist
-          cp src/readpst.exe dist/
+          cp "$EXE" dist/readpst.exe
           cp COPYING dist/
           cp AUTHORS dist/ || true
           # ldd で mingw64 の DLL 依存 (推移的) を列挙して同梱する。
           # Windows システム DLL (/c/Windows 配下) は同梱しない。
-          ldd src/readpst.exe | tee ldd.txt
+          ldd "$EXE" | tee ldd.txt
           if grep -i 'not found' ldd.txt; then
             echo '::error::unresolved DLL dependency'
             exit 1
