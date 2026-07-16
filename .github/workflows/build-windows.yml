@@ -3,7 +3,13 @@ name: Build readpst.exe for Windows (x86_64, MSYS2/MINGW64)
 # Windows で PST ファイルを扱うための readpst.exe を自前ビルドする。
 # ソースは本フォーク (上流: pst-format/libpst) のみを使い、
 # ビルド環境・依存ライブラリは MSYS2 の公式パッケージで解決する。
-# 可能な限り静的リンクし、単一exe (または最小限のDLL同梱) を成果物とする。
+#
+# リンク方式: 最小限のDLL同梱 (完全静的リンクは断念)。
+# MSYS2 配布の libgsf-1.a は glib を DLL インポート (__imp_g_*) する前提で
+# コンパイルされており、glib2/libgsf をソースから再ビルドしない限り完全静的
+# リンクは不可能なため (run 29517812942 で確認)、libgcc/libstdc++ のみ静的に
+# 取り込み、残りの mingw64 DLL を zip に同梱して単体動作させる方式とする。
+# 同梱DLLの由来 (MSYS2パッケージ名・バージョン) は DLLLIST.txt に記録する。
 
 on:
   workflow_dispatch:
@@ -67,20 +73,17 @@ jobs:
           export ACLOCAL=aclocal-1.16
           autoreconf-2.71 -fiv
 
-      - name: configure (static)
+      - name: configure
         run: |
           # readpst の必須依存: libpst(同梱・静的) / iconv / regex / libgsf / zlib / winpthread
           # --enable-python=no : Pythonバインディング不要
           # --enable-dii=no    : pst2dii (ImageMagick/libgd依存) 不要
           # --enable-libpst-shared 既定no → ツールはlibpstに静的リンクされる
-          # LDFLAGS=-static    : 外部依存も可能な限り静的リンクして単一exeを目指す
           export CFLAGS="-O2"
           export CXXFLAGS="-O2 -std=gnu++14"
-          export LDFLAGS="-static"
           # MSYS2/MINGW64 では POSIX regex (regexec) を libsystre (TREのラッパー)
-          # が提供する。libc には無いため LIBS で明示する。
-          # 静的リンク時は libtre.a が libintl_gettext を参照するため
-          # -lintl -liconv も必要 (run 29516136428 の config.log で確認)。
+          # が提供する。libc には無いため LIBS で明示する (-lintl -liconv は
+          # libtre の gettext 依存のため)。
           export LIBS="-lsystre -ltre -lintl -liconv"
           # readpst.c:673 の shmdt は HAVE_SEMAPHORE_H だけでガードされており
           # (shmget側と非対称)、SysV shm の無い MINGW64 ではコンパイルエラーに
@@ -97,51 +100,55 @@ jobs:
           # man/ の man ページは git に含まれず xmlto での手動生成前提のため、
           # トップレベル make は man/ で必ず失敗する。成果物は readpst.exe のみ
           # なので src/ だけをビルドする (Linuxで検証済み)。
-          #
-          # libtool は LDFLAGS の -static を「libtoolライブラリの静的利用」と
-          # 解釈して最終リンク行から落としてしまう (run 29516943240 で確認)。
-          # 完全静的リンクには libtool 専用フラグ -all-static を make 時に渡す。
-          # さらに静的リンクでは libgsf/glib2 の依存閉包を明示する必要がある
-          # ため pkg-config --static の出力を LIBS に加える。
-          GSF_STATIC="$(pkg-config --static --libs libgsf-1)"
-          echo "GSF_STATIC=$GSF_STATIC"
-          # glib2 のヘッダは GLIB_STATIC_COMPILATION なしだと dllimport
-          # (__imp_g_*) 参照を生成する。また MSYS2 の libgsf-1.a 自体が
-          # __imp_g_* を参照しており、__imp_ シンボルではアーカイブから
-          # 実体オブジェクトが抽出されないため、glib系は --whole-archive で
-          # 全量取り込み、ld の dllimport フィックスアップに解決させる。
-          STATIC_LIBS="-lsystre -ltre -Wl,--whole-archive -lgsf-1 -lgobject-2.0 -lglib-2.0 -Wl,--no-whole-archive $GSF_STATIC -lintl -liconv"
-          make -C src -j"$(nproc)" LDFLAGS="-all-static" LIBS="$STATIC_LIBS" \
-               CPPFLAGS="-DGLIB_STATIC_COMPILATION" \
+          # libgcc/libstdc++ だけは静的に取り込み、同梱DLLを減らす
+          # (libtool はこの2フラグを最終リンク行へ素通しする)。
+          make -C src -j"$(nproc)" LDFLAGS="-static-libgcc -static-libstdc++" \
             || { echo '=== retry serially for readable errors ==='; \
-                 make -C src LDFLAGS="-all-static" LIBS="$STATIC_LIBS" \
-                      CPPFLAGS="-DGLIB_STATIC_COMPILATION"; }
+                 make -C src LDFLAGS="-static-libgcc -static-libstdc++"; }
 
-      - name: verify static linkage
-        run: |
-          set -x
-          ls -l src/readpst.exe
-          # DLL依存を列挙する。mingw64系DLL (libgsf/glib/iconv等) への依存が残って
-          # いれば静的リンク失敗とみなしてジョブを落とす (Windows標準DLLは許容)。
-          objdump -p src/readpst.exe | grep 'DLL Name' | tee dll_deps.txt
-          if grep -iE 'libgsf|glib|iconv|libsystre|libtre|zlib1|libwinpthread|libgcc|libstdc' dll_deps.txt; then
-            echo '::error::readpst.exe still depends on mingw64 DLLs (static link failed)'
-            exit 1
-          fi
-
-      - name: smoke test (runs on Windows runner)
+      - name: smoke test (MSYS2 environment)
         run: |
           ./src/readpst.exe -V
 
-      - name: package
+      - name: package with bundled DLLs
         run: |
+          set -e
           mkdir -p dist
           cp src/readpst.exe dist/
           cp COPYING dist/
           cp AUTHORS dist/ || true
+          # ldd で mingw64 の DLL 依存 (推移的) を列挙して同梱する。
+          # Windows システム DLL (/c/Windows 配下) は同梱しない。
+          ldd src/readpst.exe | tee ldd.txt
+          if grep -i 'not found' ldd.txt; then
+            echo '::error::unresolved DLL dependency'
+            exit 1
+          fi
+          awk '$3 ~ /^\/mingw64\// { print $3 }' ldd.txt | sort -u > mingw_dlls.txt
+          echo '=== bundling DLLs ==='
+          cat mingw_dlls.txt
+          # 同梱DLLの由来 (MSYS2パッケージ名・バージョン) を DLLLIST.txt に記録
+          {
+            echo "Bundled DLLs (from MSYS2 MINGW64 packages)"
+            echo "Build date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            while read -r dll; do
+              cp "$dll" dist/
+              pkg=$(pacman -Qo "$dll" 2>/dev/null | sed 's/^.* is owned by //') || pkg="(unknown)"
+              printf '%-32s %s\n' "$(basename "$dll")" "$pkg"
+            done < mingw_dlls.txt
+          } | tee dist/DLLLIST.txt
           cd dist
-          sha256sum readpst.exe > SHA256SUMS
+          sha256sum readpst.exe *.dll > SHA256SUMS
           cat SHA256SUMS
+
+      - name: smoke test (standalone, outside MSYS2 PATH)
+        shell: pwsh
+        run: |
+          # MSYS2 の PATH に依存せず、同梱DLLだけで起動できることを検証する
+          cd dist
+          .\readpst.exe -V
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -157,5 +164,5 @@ jobs:
         run: |
           Compress-Archive -Path dist\* -DestinationPath "readpst-win64-$env:TAG_NAME.zip"
           gh release create "$env:TAG_NAME" "readpst-win64-$env:TAG_NAME.zip" `
-            --title "readpst.exe $env:TAG_NAME (win64 static)" `
+            --title "readpst.exe $env:TAG_NAME (win64, bundled DLLs)" `
             --notes-file dist/SHA256SUMS

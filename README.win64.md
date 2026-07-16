@@ -21,8 +21,13 @@
 - 依存ライブラリ (libgsf / glib2 / libiconv / zlib / TRE(regex) / winpthread) は
   MSYS2 の公式パッケージで解決する。**ビルドの起点となる libpst ソースは本リポジトリの
   ものだけを使う** (他者のビルド済み libpst バイナリは使わない)
-- `LDFLAGS=-static` により可能な限り静的リンクし、単一の `readpst.exe` を目指す。
-  CI 上で `objdump -p` により mingw64 系 DLL への動的依存が残っていないことを検証する
+- **リンク方式は「最小限の DLL 同梱」**: MSYS2 配布の `libgsf-1.a` は glib を
+  DLL インポートする前提でビルドされており、glib2/libgsf をソースから再ビルド
+  しない限り完全静的リンクは不可能なため、単一 exe 化は断念した。代わりに
+  libgcc/libstdc++ のみ静的に取り込み、必要な mingw64 DLL を zip に同梱する。
+  同梱 DLL の由来 (MSYS2 パッケージ名・バージョン) は zip 内の `DLLLIST.txt` に
+  記録され、CI 上で「MSYS2 の PATH に依存せず同梱 DLL だけで `readpst -V` が
+  動くこと」を検証している
 - configure オプション: `--enable-python=no` (Pythonバインディング不要)、
   `--enable-dii=no` (pst2dii = ImageMagick/libgd 依存機能は不要)。
   `--enable-libpst-shared` は既定 no のため、ツールは libpst に静的リンクされる
@@ -34,11 +39,13 @@ GitHub Releases から zip をダウンロードしたら、必ず SHA256 を検
 ```powershell
 # Windows PowerShell
 Get-FileHash readpst.exe -Algorithm SHA256
-# 表示されたハッシュが Release ページの SHA256SUMS と一致することを確認する
+# 表示されたハッシュが zip 内 (および Release ノート) の SHA256SUMS と一致することを確認する
+# 同梱 DLL のハッシュも SHA256SUMS に含まれる
 ```
 
-検証後、`readpst.exe` を PATH の通ったディレクトリへ配置し、`readpst -V` で
-バージョンが表示されることを確認する。
+検証後、zip を任意のディレクトリへ**丸ごと**展開し (exe と同梱 DLL は同じ
+ディレクトリに置く必要がある)、`readpst -V` でバージョンが表示されることを
+確認する。同梱 DLL の由来は `DLLLIST.txt` を参照。
 
 ## ライセンス
 
