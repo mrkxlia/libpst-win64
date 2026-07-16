@@ -23,6 +23,17 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
+      # Windowsランナーのgitは autocrlf=true のため configure.ac 等が CRLF で
+      # チェックアウトされ、m4 が `\`+CR を「ファイル名」として解釈して
+      # 「'\' is already registered with AC_CONFIG_FILES」エラーになる
+      # (LinuxでCRLF変換すると同一エラーが再現することを確認済み)。
+      # checkout 前に LF を強制する。
+      - name: force LF checkout
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
       - uses: actions/checkout@v4
 
       - uses: msys2/setup-msys2@v2
