@@ -1,0 +1,191 @@
+name: Build readpst.exe for Windows (x86_64, MSYS2/MINGW64)
+
+# Windows で PST ファイルを扱うための readpst.exe を自前ビルドする。
+# ソースは本フォーク (上流: pst-format/libpst) のみを使い、
+# ビルド環境・依存ライブラリは MSYS2 の公式パッケージで解決する。
+#
+# リンク方式: 最小限のDLL同梱 (完全静的リンクは断念)。
+# MSYS2 配布の libgsf-1.a は glib を DLL インポート (__imp_g_*) する前提で
+# コンパイルされており、glib2/libgsf をソースから再ビルドしない限り完全静的
+# リンクは不可能なため (run 29517812942 で確認)、libgcc/libstdc++ のみ静的に
+# 取り込み、残りの mingw64 DLL を zip に同梱して単体動作させる方式とする。
+# 同梱DLLの由来 (MSYS2パッケージ名・バージョン) は DLLLIST.txt に記録する。
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - win64-build
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # Windowsランナーのgitは autocrlf=true のため configure.ac 等が CRLF で
+      # チェックアウトされ、m4 が `\`+CR を「ファイル名」として解釈して
+      # 「'\' is already registered with AC_CONFIG_FILES」エラーになる
+      # (LinuxでCRLF変換すると同一エラーが再現することを確認済み)。
+      # checkout 前に LF を強制する。
+      - name: force LF checkout
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            autotools
+            autoconf2.71
+            automake1.16
+            autoconf-archive
+            gettext-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-libiconv
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-libgsf
+            mingw-w64-x86_64-libsystre
+
+      - name: autoreconf
+        run: |
+          # configure.ac は旧式の AC_OUTPUT( \ ...) 記法のため、新しい aclocal
+          # (automake 1.18) では「'\' is already registered with AC_CONFIG_FILES」
+          # エラーになる。上流ソースを改変しない方針のため、Ubuntu 24.04 で動作
+          # 実証済みの組み合わせ (autoconf 2.71 + automake/aclocal 1.16) に固定する。
+          export AUTOCONF=autoconf-2.71
+          export AUTOHEADER=autoheader-2.71
+          export AUTOM4TE=autom4te-2.71
+          export AUTOMAKE=automake-1.16
+          export ACLOCAL=aclocal-1.16
+          autoreconf-2.71 -fiv
+
+      - name: configure
+        run: |
+          # readpst の必須依存: libpst(同梱・静的) / iconv / regex / libgsf / zlib / winpthread
+          # --enable-python=no : Pythonバインディング不要
+          # --enable-dii=no    : pst2dii (ImageMagick/libgd依存) 不要
+          # --enable-libpst-shared 既定no → ツールはlibpstに静的リンクされる
+          export CFLAGS="-O2"
+          export CXXFLAGS="-O2 -std=gnu++14"
+          # MSYS2/MINGW64 では POSIX regex (regexec) を libsystre (TREのラッパー)
+          # が提供する。libc には無いため LIBS で明示する (-lintl -liconv は
+          # libtre の gettext 依存のため)。
+          export LIBS="-lsystre -ltre -lintl -liconv"
+          # readpst.c:673 の shmdt は HAVE_SEMAPHORE_H だけでガードされており
+          # (shmget側と非対称)、SysV shm の無い MINGW64 ではコンパイルエラーに
+          # なる。semaphore.h を「無し」と扱わせて fork/共有メモリ系コードを
+          # 丸ごと無効化する (Windows には fork も無く、単一プロセス動作が正)。
+          ./configure \
+            ac_cv_header_semaphore_h=no \
+            --enable-python=no \
+            --enable-dii=no \
+            || { echo '=== config.log tail ==='; tail -n 100 config.log; exit 1; }
+
+      - name: make
+        run: |
+          # man/ の man ページは git に含まれず xmlto での手動生成前提のため、
+          # トップレベル make は man/ で必ず失敗する。成果物は readpst.exe のみ
+          # なので src/ だけをビルドする (Linuxで検証済み)。
+          # libgcc/libstdc++ だけは静的に取り込み、同梱DLLを減らす
+          # (libtool はこの2フラグを最終リンク行へ素通しする)。
+          make -C src -j"$(nproc)" LDFLAGS="-static-libgcc -static-libstdc++" \
+            || { echo '=== retry serially for readable errors ==='; \
+                 make -C src LDFLAGS="-static-libgcc -static-libstdc++"; }
+
+      - name: smoke test (MSYS2 environment)
+        run: |
+          ./src/readpst.exe -V
+
+      - name: package with bundled DLLs
+        run: |
+          set -e
+          # libtool は src/readpst.exe をラッパーとして生成し、実体は
+          # src/.libs/readpst.exe に置く (run 29518329513 で確認)。
+          # 配布・依存解析はラッパーではなく実体に対して行う。
+          EXE=src/.libs/readpst.exe
+          [ -f "$EXE" ] || EXE=src/readpst.exe
+          echo "packaging: $EXE"
+          mkdir -p dist
+          cp "$EXE" dist/readpst.exe
+          cp COPYING dist/
+          cp AUTHORS dist/ || true
+          # ldd で mingw64 の DLL 依存 (推移的) を列挙して同梱する。
+          # Windows システム DLL (/c/Windows 配下) は同梱しない。
+          ldd "$EXE" | tee ldd.txt
+          if grep -i 'not found' ldd.txt; then
+            echo '::error::unresolved DLL dependency'
+            exit 1
+          fi
+          awk '$3 ~ /^\/mingw64\// { print $3 }' ldd.txt | sort -u > mingw_dlls.txt
+          echo '=== bundling DLLs ==='
+          cat mingw_dlls.txt
+          # 同梱DLLの由来 (MSYS2パッケージ名・バージョン) を DLLLIST.txt に記録
+          {
+            echo "Bundled DLLs (from MSYS2 MINGW64 packages)"
+            echo "Build date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            while read -r dll; do
+              cp "$dll" dist/
+              pkg=$(pacman -Qo "$dll" 2>/dev/null | sed 's/^.* is owned by //') || pkg="(unknown)"
+              printf '%-32s %s\n' "$(basename "$dll")" "$pkg"
+            done < mingw_dlls.txt
+          } | tee dist/DLLLIST.txt
+          cd dist
+          sha256sum readpst.exe *.dll > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: smoke test (standalone, outside MSYS2 PATH)
+        shell: pwsh
+        run: |
+          # MSYS2 の PATH に依存せず、同梱DLLだけで起動できることを検証する
+          cd dist
+          .\readpst.exe -V
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: readpst-win64
+          path: dist/
+
+      # Release作成は2経路:
+      # (1) タグ push (refs/tags/v*) — 従来通り
+      # (2) win64-build への push で .github/RELEASE_TAG が存在し、その名前の
+      #     Release がまだ無い場合 — gh release create --target が API 経由で
+      #     タグも作成する (ビルド環境から git のタグ push が許可されない
+      #     場合の経路)
+      - name: release
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/win64-build'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ("$env:GITHUB_REF" -like 'refs/tags/v*') {
+            $tag = "$env:GITHUB_REF_NAME"
+          } elseif (Test-Path .github/RELEASE_TAG) {
+            $tag = (Get-Content .github/RELEASE_TAG -Raw).Trim()
+            if (-not $tag) { Write-Host 'RELEASE_TAG is empty; skip'; exit 0 }
+            gh release view $tag *> $null
+            if ($LASTEXITCODE -eq 0) { Write-Host "release $tag already exists; skip"; exit 0 }
+          } else {
+            Write-Host 'no RELEASE_TAG; skip'
+            exit 0
+          }
+          Compress-Archive -Path dist\* -DestinationPath "readpst-win64-$tag.zip"
+          gh release create "$tag" "readpst-win64-$tag.zip" `
+            --target "$env:GITHUB_SHA" `
+            --title "readpst.exe $tag (win64, bundled DLLs)" `
+            --notes-file dist/SHA256SUMS
