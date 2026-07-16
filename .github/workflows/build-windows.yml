@@ -32,7 +32,8 @@ jobs:
           install: >-
             base-devel
             autotools
-            autoconf2.69
+            autoconf2.71
+            automake1.16
             autoconf-archive
             gettext-devel
             mingw-w64-x86_64-toolchain
@@ -44,14 +45,16 @@ jobs:
 
       - name: autoreconf
         run: |
-          # configure.ac は旧式の AC_OUTPUT( \ ...) 記法のため autoconf 2.7x では
-          # 「'\' is already registered with AC_CONFIG_FILES」エラーになる。
-          # 上流ソースを改変しない方針のため、上流リリースと同世代の
-          # autoconf 2.69 で autoreconf する。
-          export AUTOCONF=autoconf-2.69
-          export AUTOHEADER=autoheader-2.69
-          export AUTOM4TE=autom4te-2.69
-          autoreconf-2.69 -fiv
+          # configure.ac は旧式の AC_OUTPUT( \ ...) 記法のため、新しい aclocal
+          # (automake 1.18) では「'\' is already registered with AC_CONFIG_FILES」
+          # エラーになる。上流ソースを改変しない方針のため、Ubuntu 24.04 で動作
+          # 実証済みの組み合わせ (autoconf 2.71 + automake/aclocal 1.16) に固定する。
+          export AUTOCONF=autoconf-2.71
+          export AUTOHEADER=autoheader-2.71
+          export AUTOM4TE=autom4te-2.71
+          export AUTOMAKE=automake-1.16
+          export ACLOCAL=aclocal-1.16
+          autoreconf-2.71 -fiv
 
       - name: configure (static)
         run: |
