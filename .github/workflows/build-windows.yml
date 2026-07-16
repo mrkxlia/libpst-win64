@@ -77,6 +77,9 @@ jobs:
           export CFLAGS="-O2"
           export CXXFLAGS="-O2 -std=gnu++14"
           export LDFLAGS="-static"
+          # MSYS2/MINGW64 では POSIX regex (regexec) を libsystre (TREのラッパー)
+          # が提供する。libc には無いため LIBS で明示する。
+          export LIBS="-lsystre -ltre"
           ./configure \
             --enable-python=no \
             --enable-dii=no \
