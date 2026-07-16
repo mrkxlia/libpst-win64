@@ -80,10 +80,15 @@ jobs:
           # MSYS2/MINGW64 では POSIX regex (regexec) を libsystre (TREのラッパー)
           # が提供する。libc には無いため LIBS で明示する。
           export LIBS="-lsystre -ltre"
+          echo '=== systre/tre related files in /mingw64 ==='
+          ls -l /mingw64/lib/*systre* /mingw64/lib/*tre* 2>/dev/null || true
+          ls -l /mingw64/include/*regex* /mingw64/include/tre 2>/dev/null || true
           ./configure \
             --enable-python=no \
             --enable-dii=no \
-            || { echo '=== config.log tail ==='; tail -n 100 config.log; exit 1; }
+            || { echo '=== config.log: regexec section ==='; \
+                 grep -n -B2 -A30 'regexec' config.log | tail -n 150; \
+                 exit 1; }
 
       - name: make
         run: |
