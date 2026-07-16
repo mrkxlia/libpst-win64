@@ -1,0 +1,104 @@
+name: Build readpst.exe for Windows (x86_64, MSYS2/MINGW64)
+
+# knowledge-baton ADR-046 / BL-127:
+# 社内Windows環境向けに readpst.exe を自前ビルドする。
+# ソースは本フォーク (上流: pst-format/libpst) のみを使い、
+# ビルド環境・依存ライブラリは MSYS2 の公式パッケージで解決する。
+# 可能な限り静的リンクし、単一exe (または最小限のDLL同梱) を成果物とする。
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            autotools
+            autoconf-archive
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-libiconv
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-libgsf
+            mingw-w64-x86_64-libtre-git
+            mingw-w64-x86_64-libsystre
+
+      - name: autoreconf
+        run: |
+          autoreconf -fiv
+
+      - name: configure (static)
+        run: |
+          # readpst の必須依存: libpst(同梱・静的) / iconv / regex / libgsf / zlib / winpthread
+          # --enable-python=no : Pythonバインディング不要
+          # --enable-dii=no    : pst2dii (ImageMagick/libgd依存) 不要
+          # --enable-libpst-shared 既定no → ツールはlibpstに静的リンクされる
+          # LDFLAGS=-static    : 外部依存も可能な限り静的リンクして単一exeを目指す
+          export CFLAGS="-O2"
+          export CXXFLAGS="-O2 -std=gnu++14"
+          export LDFLAGS="-static"
+          ./configure \
+            --enable-python=no \
+            --enable-dii=no \
+            || { echo '=== config.log tail ==='; tail -n 100 config.log; exit 1; }
+
+      - name: make
+        run: |
+          make -j"$(nproc)" || { echo '=== retry serially for readable errors ==='; make; }
+
+      - name: verify static linkage
+        run: |
+          set -x
+          ls -l src/readpst.exe
+          # DLL依存を列挙する。mingw64系DLL (libgsf/glib/iconv等) への依存が残って
+          # いれば静的リンク失敗とみなしてジョブを落とす (Windows標準DLLは許容)。
+          objdump -p src/readpst.exe | grep 'DLL Name' | tee dll_deps.txt
+          if grep -iE 'libgsf|glib|iconv|libsystre|libtre|zlib1|libwinpthread|libgcc|libstdc' dll_deps.txt; then
+            echo '::error::readpst.exe still depends on mingw64 DLLs (static link failed)'
+            exit 1
+          fi
+
+      - name: smoke test (runs on Windows runner)
+        run: |
+          ./src/readpst.exe -V
+
+      - name: package
+        run: |
+          mkdir -p dist
+          cp src/readpst.exe dist/
+          cp COPYING dist/
+          cp AUTHORS dist/ || true
+          cd dist
+          sha256sum readpst.exe > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: readpst-win64
+          path: dist/
+
+      - name: release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          Compress-Archive -Path dist\* -DestinationPath "readpst-win64-$env:TAG_NAME.zip"
+          gh release create "$env:TAG_NAME" "readpst-win64-$env:TAG_NAME.zip" `
+            --title "readpst.exe $env:TAG_NAME (win64 static)" `
+            --notes-file dist/SHA256SUMS
