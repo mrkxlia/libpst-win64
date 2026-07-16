@@ -33,6 +33,7 @@ jobs:
             base-devel
             autotools
             autoconf-archive
+            gettext-devel
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-libiconv
