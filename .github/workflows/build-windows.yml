@@ -97,7 +97,18 @@ jobs:
           # man/ の man ページは git に含まれず xmlto での手動生成前提のため、
           # トップレベル make は man/ で必ず失敗する。成果物は readpst.exe のみ
           # なので src/ だけをビルドする (Linuxで検証済み)。
-          make -C src -j"$(nproc)" || { echo '=== retry serially for readable errors ==='; make -C src; }
+          #
+          # libtool は LDFLAGS の -static を「libtoolライブラリの静的利用」と
+          # 解釈して最終リンク行から落としてしまう (run 29516943240 で確認)。
+          # 完全静的リンクには libtool 専用フラグ -all-static を make 時に渡す。
+          # さらに静的リンクでは libgsf/glib2 の依存閉包を明示する必要がある
+          # ため pkg-config --static の出力を LIBS に加える。
+          GSF_STATIC="$(pkg-config --static --libs libgsf-1)"
+          echo "GSF_STATIC=$GSF_STATIC"
+          STATIC_LIBS="-lsystre -ltre $GSF_STATIC -lintl -liconv"
+          make -C src -j"$(nproc)" LDFLAGS="-all-static" LIBS="$STATIC_LIBS" \
+            || { echo '=== retry serially for readable errors ==='; \
+                 make -C src LDFLAGS="-all-static" LIBS="$STATIC_LIBS"; }
 
       - name: verify static linkage
         run: |
