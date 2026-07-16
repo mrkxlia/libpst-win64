@@ -161,14 +161,31 @@ jobs:
           name: readpst-win64
           path: dist/
 
-      - name: release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      # Release作成は2経路:
+      # (1) タグ push (refs/tags/v*) — 従来通り
+      # (2) win64-build への push で .github/RELEASE_TAG が存在し、その名前の
+      #     Release がまだ無い場合 — gh release create --target が API 経由で
+      #     タグも作成する (ビルド環境から git のタグ push が許可されない
+      #     場合の経路)
+      - name: release
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/win64-build'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name }}
         run: |
-          Compress-Archive -Path dist\* -DestinationPath "readpst-win64-$env:TAG_NAME.zip"
-          gh release create "$env:TAG_NAME" "readpst-win64-$env:TAG_NAME.zip" `
-            --title "readpst.exe $env:TAG_NAME (win64, bundled DLLs)" `
+          if ("$env:GITHUB_REF" -like 'refs/tags/v*') {
+            $tag = "$env:GITHUB_REF_NAME"
+          } elseif (Test-Path .github/RELEASE_TAG) {
+            $tag = (Get-Content .github/RELEASE_TAG -Raw).Trim()
+            if (-not $tag) { Write-Host 'RELEASE_TAG is empty; skip'; exit 0 }
+            gh release view $tag *> $null
+            if ($LASTEXITCODE -eq 0) { Write-Host "release $tag already exists; skip"; exit 0 }
+          } else {
+            Write-Host 'no RELEASE_TAG; skip'
+            exit 0
+          }
+          Compress-Archive -Path dist\* -DestinationPath "readpst-win64-$tag.zip"
+          gh release create "$tag" "readpst-win64-$tag.zip" `
+            --target "$env:GITHUB_SHA" `
+            --title "readpst.exe $tag (win64, bundled DLLs)" `
             --notes-file dist/SHA256SUMS
