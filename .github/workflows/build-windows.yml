@@ -8,6 +8,8 @@ name: Build readpst.exe for Windows (x86_64, MSYS2/MINGW64)
 on:
   workflow_dispatch:
   push:
+    branches:
+      - win64-build
     tags:
       - "v*"
 
