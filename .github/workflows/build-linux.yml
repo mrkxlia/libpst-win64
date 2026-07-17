@@ -1,0 +1,58 @@
+name: Linux build (-Wall -Wextra -Werror)
+
+# フェーズ2B: src/ を -Wall -Wextra 警告ゼロに保つ。CI では -Werror を付けて
+# 新たな警告が入ったらビルドを落とす。Python/dii バインディングは対象外
+# (フェーズ1同様 --enable-python=no --enable-dii=no)。
+
+on:
+  push:
+    branches:
+      - win64-build
+      - claude/new-session-gpnx2m
+    paths:
+      - "src/**"
+      - "configure.ac"
+      - ".github/workflows/build-linux.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "configure.ac"
+      - ".github/workflows/build-linux.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  warnings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool \
+            autoconf-archive gettext autopoint pkg-config zlib1g-dev libgsf-1-dev
+
+      - name: autoreconf + configure
+        run: |
+          autoreconf -fiv
+          ./configure --enable-python=no --enable-dii=no
+
+      - name: build with -Werror (gcc)
+        run: |
+          make -C src clean || true
+          make -C src CFLAGS="-O2 -Wall -Wextra -Werror" \
+                      CXXFLAGS="-O2 -std=gnu++14 -Wall -Wextra -Werror"
+
+      - name: build with -Werror (clang)
+        run: |
+          make -C src clean || true
+          make -C src CC=clang CXX=clang++ \
+                      CFLAGS="-O2 -Wall -Wextra -Werror" \
+                      CXXFLAGS="-O2 -std=gnu++14 -Wall -Wextra -Werror"
+
+      - name: smoke test
+        run: |
+          ./src/readpst -V

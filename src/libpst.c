@@ -581,7 +581,7 @@ pst_desc_tree* pst_getTopOfFolders(pst_file *pf, const pst_item *root) {
 pst_binary pst_attach_to_mem(pst_file *pf, pst_item_attach *attach) {
     pst_index_ll *ptr;
     pst_binary rc;
-    pst_holder h = {&rc.data, NULL, 0, 0, 0};
+    pst_holder h = {&rc.data, NULL, 0, 0, 0, {0}};
     rc.size = 0;
     rc.data = NULL;
     DEBUG_ENT("pst_attach_to_mem");
@@ -604,7 +604,7 @@ pst_binary pst_attach_to_mem(pst_file *pf, pst_item_attach *attach) {
 
 size_t pst_attach_to_file(pst_file *pf, pst_item_attach *attach, FILE* fp) {
     pst_index_ll *ptr;
-    pst_holder h = {NULL, fp, 0, 0, 0};
+    pst_holder h = {NULL, fp, 0, 0, 0, {0}};
     size_t size = 0;
     DEBUG_ENT("pst_attach_to_file");
     if ((!attach->data.data) && (attach->i_id != (uint64_t)-1)) {
@@ -628,7 +628,7 @@ size_t pst_attach_to_file(pst_file *pf, pst_item_attach *attach, FILE* fp) {
 
 size_t pst_attach_to_file_base64(pst_file *pf, pst_item_attach *attach, FILE* fp) {
     pst_index_ll *ptr;
-    pst_holder h = {NULL, fp, 1, 0, 0};
+    pst_holder h = {NULL, fp, 1, 0, 0, {0}};
     size_t size = 0;
     DEBUG_ENT("pst_attach_to_file_base64");
     if ((!attach->data.data) && (attach->i_id != (uint64_t)-1)) {
@@ -2288,7 +2288,7 @@ static int pst_process(uint64_t block_id, pst_mapi_object *list, pst_item *item,
                                 pst_item_extra_field *ef = (pst_item_extra_field*) pst_malloc(sizeof(pst_item_extra_field));
                                 memset(ef, 0, sizeof(pst_item_extra_field));
                                 offset      = PST_LE_GET_INT32(list->elements[x]->data + p); p+=4;
-                                next_offset = (i == array_element_count) ? list->elements[x]->size : PST_LE_GET_INT32(list->elements[x]->data + p);;
+                                next_offset = (i == array_element_count) ? (int32_t)list->elements[x]->size : PST_LE_GET_INT32(list->elements[x]->data + p);
                                 string_length = next_offset - offset;
                                 ef->value = pst_malloc(string_length + 1);
                                 memcpy(ef->value, list->elements[x]->data + offset, string_length);
@@ -4145,7 +4145,7 @@ static size_t pst_ff_getIDblock(pst_file *pf, uint64_t i_id, char** buf) {
 static size_t pst_ff_getID2block(pst_file *pf, uint64_t id2, pst_id2_tree *id2_head, char** buf) {
     size_t ret;
     pst_id2_tree* ptr;
-    pst_holder h = {buf, NULL, 0, 0, 0};
+    pst_holder h = {buf, NULL, 0, 0, 0, {0}};
     DEBUG_ENT("pst_ff_getID2block");
     ptr = pst_getID2(id2_head, id2);
 

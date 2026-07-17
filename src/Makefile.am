@@ -5,8 +5,13 @@ else
 endif
 
 
+# Build the library and tools cleanly under -Wall -Wextra. The tree is warning
+# free with these enabled; CI additionally builds with -Werror to keep it so.
+AM_CFLAGS = -Wall -Wextra
+AM_CXXFLAGS = -Wall -Wextra
+
 if OS_SOLARIS
-    AM_CFLAGS = -D_POSIX_PTHREAD_SEMANTICS
+    AM_CFLAGS += -D_POSIX_PTHREAD_SEMANTICS
 endif
 
 

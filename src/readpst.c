@@ -200,6 +200,7 @@ static int grim_reaper(int waitall)
 
 pid_t try_fork(char *folder)
 {
+    (void)folder;   // unused when fork()/semaphores are unavailable (e.g. Windows)
 #ifdef HAVE_FORK
 #ifdef HAVE_SEMAPHORE_H
     int available = grim_reaper(0);
@@ -1578,6 +1579,7 @@ void find_rfc822_headers(char** extra_mime_headers)
 
 void write_body_part(FILE* f_output, pst_string *body, char *mime, char *charset, char *boundary, pst_file* pst)
 {
+    (void)pst;   // retained for API symmetry; not used by this function
     DEBUG_ENT("write_body_part");
     removeCR(body->str);
     size_t body_len = strlen(body->str);
