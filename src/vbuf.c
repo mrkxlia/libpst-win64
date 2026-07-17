@@ -97,9 +97,24 @@ static size_t sbcs_conversion(pst_vbuf *dest, const char *inbuf, int iblen, icon
 void pst_unicode_close();
 void pst_unicode_close()
 {
-    iconv_close(i16to8);
-    if (target_open_from) iconv_close(i8totarget);
-    if (target_open_to)   iconv_close(target2i8);
+    // The iconv descriptors here are process-global static state shared by
+    // every pst_file. pst_close() calls this on every close, so a second
+    // close (e.g. a program that opens/closes more than one .pst) must not
+    // close an already-closed descriptor — that is a double free. Guard each
+    // close with its "is open" flag and reset the descriptors so this is
+    // idempotent.
+    if (unicode_up) {
+        iconv_close(i16to8);
+        i16to8 = (iconv_t)-1;
+    }
+    if (target_open_from) {
+        iconv_close(i8totarget);
+        i8totarget = (iconv_t)-1;
+    }
+    if (target_open_to) {
+        iconv_close(target2i8);
+        target2i8 = (iconv_t)-1;
+    }
     if (target_charset)   free((char *)target_charset);
     target_charset   = NULL;
     target_open_from = 0;

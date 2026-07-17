@@ -8,12 +8,12 @@ Based on readpst.c by David Smith
 
 */
 
-using namespace std;
-
 // needed for std c++ collections
 #include <set>
 #include <vector>
 #include <string>
+
+using namespace std;
 
 #include "define.h"
 #include "lzfu.h"
@@ -723,6 +723,7 @@ char *check_filename(char *fname) {
 // This function escapes Distinguished Names (as per RFC4514)
 void print_ldif_dn(const char *attr, pst_string value, const char *base)
 {
+    (void)attr;   // the dn is always keyed on cn=; attr is unused here
     printf("dn: cn=");
     const char *valuestr = value.str;
     // remove leading spaces (RFC says escape them)

@@ -47,11 +47,57 @@ Get-FileHash readpst.exe -Algorithm SHA256
 ディレクトリに置く必要がある)、`readpst -V` でバージョンが表示されることを
 確認する。同梱 DLL の由来は `DLLLIST.txt` を参照。
 
+## Python ライブラリ (libpst-py)
+
+`readpst.exe` とは別に、**pybind11 ベースの Python バインディング** (`libpst-py`) を
+同梱している。libpst の C コアを拡張モジュールに静的に取り込んだ単一モジュールで、
+実行時に libpst の共有ライブラリへ依存しない。旧 Boost.Python 実装
+(`python/python-libpst.cpp`) を置き換える新実装 (`python/pybind_libpst.cpp`)。
+
+### API (最小)
+
+```python
+import libpst_py
+
+pst = libpst_py.open("archive.pst")        # charset= も指定可 (既定 UTF-8)
+def walk(folder, indent=0):
+    print(" " * indent + folder.name)
+    for m in folder.messages:
+        # m.subject / m.sender / m.sender_name / m.date (ISO) /
+        # m.plain_text / m.attachment_names / m.attachments[].filename,mimetype,size
+        print(" " * (indent + 2) + f"- {m.subject} <{m.sender}>")
+    for sub in folder.subfolders:
+        walk(sub, indent + 2)
+walk(pst.root)
+```
+
+### ビルド対象プラットフォーム
+
+`cibuildwheel` (`.github/workflows/wheels.yml`) で **Linux (manylinux) / macOS** 向け
+wheel を CPython 3.10〜3.13 でビルドする。**Windows (win_amd64) は対象外**:
+libpst コアは iconv を必須とするが MSVC/Windows の libc は iconv を提供しないため。
+Windows で PST を扱う場合は本リポジトリの `readpst.exe` (上記) を使う。
+
+### PyPI 公開手順 (このリポジトリでは未実施)
+
+公開は PyPI アカウント・トークンの設定が必要なため利用者側で行う。準備は整っている:
+
+1. PyPI でパッケージ名 `libpst-py` の空きを確認 (使用済みなら `pyproject.toml` の
+   `name` を変更)。
+2. PyPI の Trusted Publishing (OIDC) を設定するか、API トークンを GitHub の
+   リポジトリ Secrets に `PYPI_API_TOKEN` として登録する。
+3. `wheels.yml` の成果物 (各 OS の `wheels-*` と `sdist`) をダウンロードし、
+   `twine upload` するか、`pypa/gh-action-pypi-publish` を使う publish ジョブを
+   タグ push 時に走らせる (このリポジトリには未追加 — 公開判断は利用者に委ねる)。
+4. ローカル確認: `python -m build` → `pip install dist/*.whl` →
+   `pytest tests`。
+
 ## ライセンス
 
 上流と同じ **GPLv2+** ([COPYING](COPYING) 参照)。Release に含まれる `readpst.exe` は
 本リポジトリのソースからビルドされたものであり、対応するソースコードは本リポジトリで
-公開されている (GPL §3 の要件を満たす)。
+公開されている (GPL §3 の要件を満たす)。同梱の Python バインディング (`libpst-py`) も
+同じく GPLv2+。
 
 ## 免責
 

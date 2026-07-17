@@ -269,7 +269,7 @@ static unsigned char comp_high2 [] = {
 
 static size_t           pst_append_holder(pst_holder *h, size_t size, char **buf, size_t z);
 static int              pst_build_desc_ptr(pst_file *pf, int64_t offset, int32_t depth, uint64_t linku1, uint64_t start_val, uint64_t end_val);
-static pst_id2_tree*    pst_build_id2(pst_file *pf, pst_index_ll* list);
+static pst_id2_tree*    pst_build_id2(pst_file *pf, pst_index_ll* list, int32_t depth);
 static int              pst_build_id_ptr(pst_file *pf, int64_t offset, int32_t depth, uint64_t linku1, uint64_t start_val, uint64_t end_val);
 static int              pst_chr_count(char *str, char x);
 static size_t           pst_ff_compile_ID(pst_file *pf, uint64_t i_id, pst_holder *h, size_t size);
@@ -581,7 +581,7 @@ pst_desc_tree* pst_getTopOfFolders(pst_file *pf, const pst_item *root) {
 pst_binary pst_attach_to_mem(pst_file *pf, pst_item_attach *attach) {
     pst_index_ll *ptr;
     pst_binary rc;
-    pst_holder h = {&rc.data, NULL, 0, 0, 0};
+    pst_holder h = {&rc.data, NULL, 0, 0, 0, {0}};
     rc.size = 0;
     rc.data = NULL;
     DEBUG_ENT("pst_attach_to_mem");
@@ -604,7 +604,7 @@ pst_binary pst_attach_to_mem(pst_file *pf, pst_item_attach *attach) {
 
 size_t pst_attach_to_file(pst_file *pf, pst_item_attach *attach, FILE* fp) {
     pst_index_ll *ptr;
-    pst_holder h = {NULL, fp, 0, 0, 0};
+    pst_holder h = {NULL, fp, 0, 0, 0, {0}};
     size_t size = 0;
     DEBUG_ENT("pst_attach_to_file");
     if ((!attach->data.data) && (attach->i_id != (uint64_t)-1)) {
@@ -628,7 +628,7 @@ size_t pst_attach_to_file(pst_file *pf, pst_item_attach *attach, FILE* fp) {
 
 size_t pst_attach_to_file_base64(pst_file *pf, pst_item_attach *attach, FILE* fp) {
     pst_index_ll *ptr;
-    pst_holder h = {NULL, fp, 1, 0, 0};
+    pst_holder h = {NULL, fp, 1, 0, 0, {0}};
     size_t size = 0;
     DEBUG_ENT("pst_attach_to_file_base64");
     if ((!attach->data.data) && (attach->i_id != (uint64_t)-1)) {
@@ -726,7 +726,7 @@ int pst_load_extended_attributes(pst_file *pf) {
     }
 
     if (p->assoc_tree) {
-        id2_head = pst_build_id2(pf, p->assoc_tree);
+        id2_head = pst_build_id2(pf, p->assoc_tree, 0);
         pst_printID2ptr(id2_head);
     } else {
         DEBUG_WARN(("Have not been able to fetch any id2 values for d_id 0x61. Brace yourself!\n"));
@@ -851,6 +851,12 @@ int pst_load_extended_attributes(pst_file *pf) {
 
 #define BLOCK_SIZE               (size_t)((pf->do_read64 == 2) ? 4096 : 512)      // index blocks
 #define DESC_BLOCK_SIZE          (size_t)((pf->do_read64 == 2) ? 4096 : 512)      // descriptor blocks
+
+// Maximum b-tree recursion depth for pst_build_id_ptr/pst_build_desc_ptr.
+// Real index/descriptor trees have a fan-out of tens of entries per block, so
+// even a full 64-bit key space is covered in well under a dozen levels; this
+// cap only stops a malformed (deep or cyclic) tree from exhausting the stack.
+#define PST_MAX_BTREE_DEPTH      64
 #define ITEM_COUNT_OFFSET        (size_t)((pf->do_read64) ? (pf->do_read64 == 2 ? ITEM_COUNT_OFFSET4K : ITEM_COUNT_OFFSET64) : ITEM_COUNT_OFFSET32)
 #define LEVEL_INDICATOR_OFFSET   (size_t)((pf->do_read64) ? (pf->do_read64 == 2 ? LEVEL_INDICATOR_OFFSET4K : LEVEL_INDICATOR_OFFSET64) : LEVEL_INDICATOR_OFFSET32)
 #define BACKLINK_OFFSET          (size_t)((pf->do_read64) ? (pf->do_read64 == 2 ? BACKLINK_OFFSET4K : BACKLINK_OFFSET64) : BACKLINK_OFFSET32)
@@ -1041,6 +1047,11 @@ static int pst_build_id_ptr(pst_file *pf, int64_t offset, int32_t depth, uint64_
 
     DEBUG_ENT("pst_build_id_ptr");
     DEBUG_INFO(("offset %#" PRIx64 " depth %" PRIi32 " linku1 %#" PRIx64 " start %#" PRIx64 " end %#" PRIx64 "\n", (uint64_t) offset, depth, linku1, start_val, end_val));
+    if (depth < 0 || depth > PST_MAX_BTREE_DEPTH) {
+        DEBUG_WARN(("Index b-tree too deep (depth %" PRIi32 "); possible corruption or cycle\n", depth));
+        DEBUG_RET();
+        return -1;
+    }
     if (end_val <= start_val) {
         DEBUG_WARN(("The end value is BEFORE the start value. This function will quit. Soz. [start:%#" PRIx64 ", end:%#" PRIx64 "]\n", start_val, end_val));
         DEBUG_RET();
@@ -1077,10 +1088,26 @@ static int pst_build_id_ptr(pst_file *pf, int64_t offset, int32_t depth, uint64_
     }
     int entry_size = (int32_t)(unsigned)(buf[ENTRY_SIZE_OFFSET]);
     DEBUG_INFO(("count %" PRIi32 " max %" PRIi32 " size %i\n", item_count, count_max, entry_size));
+    // item_count and entry_size come straight from the (untrusted) block, so a
+    // malformed block can drive bptr past the end of buf. Each decode below
+    // reads a fixed-size record from bptr; guard those reads against the end of
+    // the BLOCK_SIZE buffer.
+    const char *bend = buf + BLOCK_SIZE;
+    const size_t idx_rec = (pf->do_read64 == 2) ? sizeof(pst_index)
+                         : (pf->do_read64 == 1) ? sizeof(pst_index64)
+                                                : sizeof(pst_index32);
+    const size_t tbl_rec = (pf->do_read64) ? sizeof(struct pst_table_ptr_struct)
+                                           : sizeof(struct pst_table_ptr_struct32);
     if (buf[LEVEL_INDICATOR_OFFSET] == '\0') {
         // this node contains leaf pointers
         x = 0;
         while (x < item_count) {
+            if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < idx_rec) {
+                DEBUG_WARN(("Index entry runs past the end of the block\n"));
+                if (buf) free(buf);
+                DEBUG_RET();
+                return -1;
+            }
             pst_decode_index(pf, &index, bptr);
             bptr += entry_size;
             x++;
@@ -1110,11 +1137,23 @@ static int pst_build_id_ptr(pst_file *pf, int64_t offset, int32_t depth, uint64_
         // this node contains node pointers
         x = 0;
         while (x < item_count) {
+            if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < tbl_rec) {
+                DEBUG_WARN(("Table entry runs past the end of the block\n"));
+                if (buf) free(buf);
+                DEBUG_RET();
+                return -1;
+            }
             pst_decode_table(pf, &table, bptr);
             bptr += entry_size;
             x++;
             if (table.start == 0) break;
             if (x < item_count) {
+                if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < tbl_rec) {
+                    DEBUG_WARN(("Look-ahead table entry runs past the end of the block\n"));
+                    if (buf) free(buf);
+                    DEBUG_RET();
+                    return -1;
+                }
                 (void)pst_decode_table(pf, &table2, bptr);
             }
             else {
@@ -1152,6 +1191,11 @@ static int pst_build_desc_ptr (pst_file *pf, int64_t offset, int32_t depth, uint
 
     DEBUG_ENT("pst_build_desc_ptr");
     DEBUG_INFO(("offset %#" PRIx64 " depth %" PRIi32 " linku1 %#" PRIx64 " start %#" PRIx64 " end %#" PRIx64 "\n", (uint64_t)offset, depth, linku1, start_val, end_val));
+    if (depth < 0 || depth > PST_MAX_BTREE_DEPTH) {
+        DEBUG_WARN(("Descriptor b-tree too deep (depth %" PRIi32 "); possible corruption or cycle\n", depth));
+        DEBUG_RET();
+        return -1;
+    }
     if (end_val <= start_val) {
         DEBUG_WARN(("The end value is BEFORE the start value. This function will quit. Soz. [start:%#" PRIx64 ", end:%#" PRIx64 "]\n", start_val, end_val));
         DEBUG_RET();
@@ -1180,6 +1224,12 @@ static int pst_build_desc_ptr (pst_file *pf, int64_t offset, int32_t depth, uint
         return -1;
     }
     int32_t entry_size = (int32_t)(unsigned)(buf[ENTRY_SIZE_OFFSET]);
+    // item_count and entry_size come from the untrusted block; guard the
+    // fixed-size record reads below against the end of the DESC_BLOCK_SIZE buffer.
+    const char *bend = buf + DESC_BLOCK_SIZE;
+    const size_t desc_rec_size = (pf->do_read64) ? sizeof(pst_desc) : sizeof(pst_desc32);
+    const size_t tbl_rec = (pf->do_read64) ? sizeof(struct pst_table_ptr_struct)
+                                           : sizeof(struct pst_table_ptr_struct32);
     if (buf[LEVEL_INDICATOR_OFFSET] == '\0') {
         // this node contains leaf pointers
         DEBUG_HEXDUMPC(buf, DESC_BLOCK_SIZE, entry_size);
@@ -1190,6 +1240,12 @@ static int pst_build_desc_ptr (pst_file *pf, int64_t offset, int32_t depth, uint
             return -1;
         }
         for (x=0; x<item_count; x++) {
+            if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < desc_rec_size) {
+                DEBUG_WARN(("Descriptor entry runs past the end of the block\n"));
+                if (buf) free(buf);
+                DEBUG_RET();
+                return -1;
+            }
             pst_decode_desc(pf, &desc_rec, bptr);
             bptr += entry_size;
             DEBUG_INFO(("[%" PRIi32 "] Item(%#x) = [d_id = %#" PRIx64 ", desc_id = %#" PRIx64 ", tree_id = %#" PRIx64 ", parent_d_id = %#" PRIx32 "]\n",
@@ -1222,10 +1278,22 @@ static int pst_build_desc_ptr (pst_file *pf, int64_t offset, int32_t depth, uint
             return -1;
         }
         for (x=0; x<item_count; x++) {
+            if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < tbl_rec) {
+                DEBUG_WARN(("Descriptor table entry runs past the end of the block\n"));
+                if (buf) free(buf);
+                DEBUG_RET();
+                return -1;
+            }
             pst_decode_table(pf, &table, bptr);
             bptr += entry_size;
             if (table.start == 0) break;
             if (x < (item_count-1)) {
+                if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < tbl_rec) {
+                    DEBUG_WARN(("Look-ahead descriptor table entry runs past the end of the block\n"));
+                    if (buf) free(buf);
+                    DEBUG_RET();
+                    return -1;
+                }
                 (void)pst_decode_table(pf, &table2, bptr);
             }
             else {
@@ -1276,7 +1344,7 @@ pst_item* pst_parse_item(pst_file *pf, pst_desc_tree *d_ptr, pst_id2_tree *m_hea
             DEBUG_WARN(("supplied master head, but have a list that is building a new id2_head\n"));
             m_head = NULL;
         }
-        id2_head = pst_build_id2(pf, d_ptr->assoc_tree);
+        id2_head = pst_build_id2(pf, d_ptr->assoc_tree, 0);
     }
     pst_printID2ptr(id2_head);
 
@@ -1509,6 +1577,14 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
     if ((read_size = pst_ff_getIDblock_dec(pf, block_id, &buf)) == 0) {
         DEBUG_WARN(("Error reading block id %#" PRIx64 "\n", block_id));
         if (buf) free (buf);
+        DEBUG_RET();
+        return NULL;
+    }
+
+    // The block must be large enough to hold the fixed header read below.
+    if (read_size < sizeof(block_hdr)) {
+        DEBUG_WARN(("Block id %#" PRIx64 " too small for header [%zu bytes]\n", block_id, read_size));
+        if (buf) free(buf);
         DEBUG_RET();
         return NULL;
     }
@@ -2212,7 +2288,7 @@ static int pst_process(uint64_t block_id, pst_mapi_object *list, pst_item *item,
                                 pst_item_extra_field *ef = (pst_item_extra_field*) pst_malloc(sizeof(pst_item_extra_field));
                                 memset(ef, 0, sizeof(pst_item_extra_field));
                                 offset      = PST_LE_GET_INT32(list->elements[x]->data + p); p+=4;
-                                next_offset = (i == array_element_count) ? list->elements[x]->size : PST_LE_GET_INT32(list->elements[x]->data + p);;
+                                next_offset = (i == array_element_count) ? (int32_t)list->elements[x]->size : PST_LE_GET_INT32(list->elements[x]->data + p);
                                 string_length = next_offset - offset;
                                 ef->value = pst_malloc(string_length + 1);
                                 memcpy(ef->value, list->elements[x]->data + offset, string_length);
@@ -3300,18 +3376,29 @@ static void pst_free_xattrib(pst_x_attrib_ll *x) {
 }
 
 
-static pst_id2_tree * pst_build_id2(pst_file *pf, pst_index_ll* list) {
+static pst_id2_tree * pst_build_id2(pst_file *pf, pst_index_ll* list, int32_t depth) {
     pst_block_header block_head;
     pst_id2_tree *head = NULL, *tail = NULL;
     uint16_t x = 0;
     char *b_ptr = NULL;
     char *buf = NULL;
+    size_t buf_size = 0;
     pst_id2_assoc id2_rec;
     pst_index_ll *i_ptr = NULL;
     pst_id2_tree *i2_ptr = NULL;
     DEBUG_ENT("pst_build_id2");
 
-    if (pst_read_block_size(pf, list->offset, list->size, list->inflated_size, &buf) < list->size) {
+    // id2 association blocks can reference child blocks, forming a tree we
+    // recurse into below. Bound the depth so a malformed (deep or cyclic)
+    // chain cannot exhaust the stack.
+    if (depth < 0 || depth > PST_MAX_BTREE_DEPTH) {
+        DEBUG_WARN(("id2 tree too deep (depth %" PRIi32 "); possible corruption or cycle\n", depth));
+        DEBUG_RET();
+        return NULL;
+    }
+
+    buf_size = pst_read_block_size(pf, list->offset, list->size, list->inflated_size, &buf);
+    if (buf_size < list->size) {
         //an error occurred in block read
         DEBUG_WARN(("block read error occurred. offset = %#" PRIx64 ", size = %#" PRIx64 "\n", list->offset, list->size));
         if (buf) free(buf);
@@ -3319,6 +3406,14 @@ static pst_id2_tree * pst_build_id2(pst_file *pf, pst_index_ll* list) {
         return NULL;
     }
     DEBUG_HEXDUMPC(buf, list->size, 16);
+
+    // The block must be large enough to hold the fixed header before we read it.
+    if (buf_size < sizeof(block_head)) {
+        DEBUG_WARN(("id2 block too small for header [%zu bytes]\n", buf_size));
+        if (buf) free(buf);
+        DEBUG_RET();
+        return NULL;
+    }
 
     memcpy(&block_head, buf, sizeof(block_head));
     LE16_CPU(block_head.type);
@@ -3335,7 +3430,16 @@ static pst_id2_tree * pst_build_id2(pst_file *pf, pst_index_ll* list) {
             list->i_id, block_head.count, list->offset));
     x = 0;
     b_ptr = buf + ((pf->do_read64) ? 0x08 : 0x04);
+    const char *b_end = buf + buf_size;
+    const size_t assoc_rec = (pf->do_read64) ? sizeof(pst_id2_assoc)
+                                             : sizeof(pst_id2_assoc32);
     while (x < block_head.count) {
+        // Each association record is read from b_ptr; stop if the next record
+        // would run past the end of the (untrusted) block.
+        if (b_ptr < buf || b_ptr >= b_end || (size_t)(b_end - b_ptr) < assoc_rec) {
+            DEBUG_WARN(("id2 association record runs past the end of the block\n"));
+            break;
+        }
         b_ptr += pst_decode_assoc(pf, &id2_rec, b_ptr);
         DEBUG_INFO(("id2 = %#" PRIx32 ", id = %#" PRIx64 ", child id = %#" PRIx64 "\n", id2_rec.id2, id2_rec.id, id2_rec.child_id));
         if ((i_ptr = pst_getID(pf, id2_rec.id)) == NULL) {
@@ -3357,7 +3461,7 @@ static pst_id2_tree * pst_build_id2(pst_file *pf, pst_index_ll* list) {
                     DEBUG_WARN(("child id [%#" PRIx64 "] not found\n", id2_rec.child_id));
                 }
                 else {
-                    i2_ptr->child = pst_build_id2(pf, i_ptr);
+                    i2_ptr->child = pst_build_id2(pf, i_ptr, depth + 1);
                 }
             }
         }
@@ -3697,6 +3801,15 @@ pst_index_ll* pst_getID(pst_file* pf, uint64_t i_id) {
     //if (i_id & 2) DEBUG_INFO(("have two id bit %#" PRIx64 "\n", i_id));
     i_id -= (i_id & 1);
 
+    // A malformed or empty pst may leave the index table unpopulated.
+    // Passing a NULL base to bsearch() is undefined behaviour (the base
+    // is declared non-null) even when the element count is zero.
+    if (!pf->i_table || pf->i_count == 0) {
+        DEBUG_INFO(("ERROR: index table is empty\n"));
+        DEBUG_RET();
+        return NULL;
+    }
+
     DEBUG_INFO(("Trying to find %#" PRIx64 "\n", i_id));
     ptr = bsearch(&i_id, pf->i_table, pf->i_count, sizeof *pf->i_table, pst_getID_compare);
     if (ptr) {DEBUG_INFO(("Found Value %#" PRIx64 "\n", i_id));            }
@@ -4032,7 +4145,7 @@ static size_t pst_ff_getIDblock(pst_file *pf, uint64_t i_id, char** buf) {
 static size_t pst_ff_getID2block(pst_file *pf, uint64_t id2, pst_id2_tree *id2_head, char** buf) {
     size_t ret;
     pst_id2_tree* ptr;
-    pst_holder h = {buf, NULL, 0, 0, 0};
+    pst_holder h = {buf, NULL, 0, 0, 0, {0}};
     DEBUG_ENT("pst_ff_getID2block");
     ptr = pst_getID2(id2_head, id2);
 

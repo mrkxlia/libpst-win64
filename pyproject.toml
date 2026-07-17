@@ -1,0 +1,49 @@
+[build-system]
+requires = ["scikit-build-core>=0.8", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "libpst-py"
+version = "0.1.0"
+description = "Read Microsoft Outlook .pst files from Python (pybind11 binding over the libpst C core)"
+readme = "README.win64.md"
+requires-python = ">=3.10"
+license = { text = "GPL-2.0-or-later" }
+authors = [{ name = "libpst-win64 contributors" }]
+keywords = ["pst", "outlook", "email", "libpst", "mapi"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: C",
+    "Topic :: Communications :: Email",
+]
+
+[project.urls]
+Homepage = "https://github.com/mrkxlia/libpst-win64"
+Upstream = "https://github.com/pst-format/libpst"
+
+[tool.scikit-build]
+minimum-version = "0.8"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["libpst_py"]
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+build-frontend = "build"
+test-requires = "pytest"
+test-command = "pytest {project}/tests -q"
+# Malformed-input reproducers live in the repo; the smoke test only needs the
+# built wheel and pytest.
+
+[tool.cibuildwheel.linux]
+# manylinux needs zlib headers to build the libpst core.
+before-all = "yum install -y zlib-devel || apk add zlib-dev || true"
+
+[tool.cibuildwheel.macos]
+# zlib and iconv ship with the macOS SDK.
+
+[tool.cibuildwheel.windows]
+# libpst's core needs iconv, which MSVC/Windows does not provide in libc.
+# See README.win64.md — Windows wheels are not built here; Windows users use
+# readpst.exe from the win64 Release instead.
