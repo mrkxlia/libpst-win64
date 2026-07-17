@@ -1102,7 +1102,7 @@ static int pst_build_id_ptr(pst_file *pf, int64_t offset, int32_t depth, uint64_
         // this node contains leaf pointers
         x = 0;
         while (x < item_count) {
-            if (bptr < buf || (bend - bptr) < (ptrdiff_t)idx_rec) {
+            if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < idx_rec) {
                 DEBUG_WARN(("Index entry runs past the end of the block\n"));
                 if (buf) free(buf);
                 DEBUG_RET();
@@ -1137,7 +1137,7 @@ static int pst_build_id_ptr(pst_file *pf, int64_t offset, int32_t depth, uint64_
         // this node contains node pointers
         x = 0;
         while (x < item_count) {
-            if (bptr < buf || (bend - bptr) < (ptrdiff_t)tbl_rec) {
+            if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < tbl_rec) {
                 DEBUG_WARN(("Table entry runs past the end of the block\n"));
                 if (buf) free(buf);
                 DEBUG_RET();
@@ -1148,7 +1148,7 @@ static int pst_build_id_ptr(pst_file *pf, int64_t offset, int32_t depth, uint64_
             x++;
             if (table.start == 0) break;
             if (x < item_count) {
-                if (bptr < buf || (bend - bptr) < (ptrdiff_t)tbl_rec) {
+                if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < tbl_rec) {
                     DEBUG_WARN(("Look-ahead table entry runs past the end of the block\n"));
                     if (buf) free(buf);
                     DEBUG_RET();
@@ -1240,7 +1240,7 @@ static int pst_build_desc_ptr (pst_file *pf, int64_t offset, int32_t depth, uint
             return -1;
         }
         for (x=0; x<item_count; x++) {
-            if (bptr < buf || (bend - bptr) < (ptrdiff_t)desc_rec_size) {
+            if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < desc_rec_size) {
                 DEBUG_WARN(("Descriptor entry runs past the end of the block\n"));
                 if (buf) free(buf);
                 DEBUG_RET();
@@ -1278,7 +1278,7 @@ static int pst_build_desc_ptr (pst_file *pf, int64_t offset, int32_t depth, uint
             return -1;
         }
         for (x=0; x<item_count; x++) {
-            if (bptr < buf || (bend - bptr) < (ptrdiff_t)tbl_rec) {
+            if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < tbl_rec) {
                 DEBUG_WARN(("Descriptor table entry runs past the end of the block\n"));
                 if (buf) free(buf);
                 DEBUG_RET();
@@ -1288,7 +1288,7 @@ static int pst_build_desc_ptr (pst_file *pf, int64_t offset, int32_t depth, uint
             bptr += entry_size;
             if (table.start == 0) break;
             if (x < (item_count-1)) {
-                if (bptr < buf || (bend - bptr) < (ptrdiff_t)tbl_rec) {
+                if (bptr < buf || bptr >= bend || (size_t)(bend - bptr) < tbl_rec) {
                     DEBUG_WARN(("Look-ahead descriptor table entry runs past the end of the block\n"));
                     if (buf) free(buf);
                     DEBUG_RET();
@@ -3436,7 +3436,7 @@ static pst_id2_tree * pst_build_id2(pst_file *pf, pst_index_ll* list, int32_t de
     while (x < block_head.count) {
         // Each association record is read from b_ptr; stop if the next record
         // would run past the end of the (untrusted) block.
-        if (b_ptr < buf || (b_end - b_ptr) < (ptrdiff_t)assoc_rec) {
+        if (b_ptr < buf || b_ptr >= b_end || (size_t)(b_end - b_ptr) < assoc_rec) {
             DEBUG_WARN(("id2 association record runs past the end of the block\n"));
             break;
         }
