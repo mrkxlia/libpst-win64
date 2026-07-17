@@ -1,0 +1,97 @@
+name: Python wheels (cibuildwheel)
+
+# フェーズ2C: pybind11 バインディングを cibuildwheel で Linux(manylinux)/macOS
+# 向けにビルドする。Windows は libpst コアが iconv を要求し MSVC で提供され
+# ないため対象外 (README.win64.md 参照、Windows は readpst.exe を使う)。
+# PyPI 公開は行わない — 公開準備までがスコープ。
+
+on:
+  push:
+    branches:
+      - win64-build
+      - claude/new-session-gpnx2m
+    paths:
+      - "python/pybind_libpst.cpp"
+      - "libpst_py/**"
+      - "src/**"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "pyproject.toml"
+      - "tests/**"
+      - ".github/workflows/wheels.yml"
+  pull_request:
+    paths:
+      - "python/pybind_libpst.cpp"
+      - "libpst_py/**"
+      - "src/**"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "pyproject.toml"
+      - "tests/**"
+      - ".github/workflows/wheels.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast always-on integration test on Linux: build one wheel, install it,
+  # and run the smoke/reproducer tests from a directory where the source
+  # package cannot shadow the installed extension.
+  integration-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev
+          python -m pip install --upgrade pip build pytest
+      - name: build wheel
+        run: python -m build --wheel --outdir dist
+      - name: install wheel
+        run: pip install dist/*.whl
+      - name: run tests (outside repo root to avoid source shadowing)
+        run: |
+          mkdir -p /tmp/run && cd /tmp/run
+          pytest "$GITHUB_WORKSPACE/tests" -q
+
+  build-wheels:
+    name: wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-13, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build wheels
+        uses: pypa/cibuildwheel@v2.21
+        # Configuration (target CPythons, per-OS deps, test command) lives in
+        # pyproject.toml under [tool.cibuildwheel].
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+          if-no-files-found: error
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install --upgrade build
+          python -m build --sdist --outdir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
