@@ -134,6 +134,9 @@ public:
         }
         opened_ = true;
         if (pst_load_index(&pf_) != 0) {
+            // A C++ constructor that throws does not run this object's own
+            // destructor, so release the open pst_file here before throwing.
+            close();
             throw std::runtime_error("failed to load index (not a valid pst?): " + path);
         }
         pst_load_extended_attributes(&pf_);

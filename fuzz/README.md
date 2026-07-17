@@ -12,6 +12,10 @@ workflow, and can also be run locally.
   parse path: `pst_open` → `pst_load_index` → `pst_load_extended_attributes`
   → `pst_parse_item` over every descriptor → attachment assembly and RTF
   decompression, mirroring how `readpst` walks a file.
+- `fuzz_pst_walk.c` — the same open/load, then the `pst_getTopOfFolders` +
+  recursive folder-tree walk used by the Python binding, reading each
+  message's UTF-8 fields and attachment names. Covers the folder-recursion
+  path (distinct from the flat descriptor walk above).
 
 ## Corpus
 

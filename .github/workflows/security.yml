@@ -66,6 +66,8 @@ jobs:
             fuzz/fuzz_lzfu.c src/lzfu.c src/debug.c -o fuzz_lzfu
           clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SAN \
             fuzz/fuzz_pst_open.c $COMMON_SRCS -lz -o fuzz_pst_open
+          clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SAN \
+            fuzz/fuzz_pst_walk.c $COMMON_SRCS -lz -o fuzz_pst_walk
 
       - name: fuzz pst_lzfu_decompress (~5 min)
         env:
@@ -84,8 +86,19 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           mkdir -p fuzz_run_pst
+          cp fuzz/corpus/* regression/fuzz-corpus/* fuzz_run_pst/ 2>/dev/null || true
           ./fuzz_pst_open -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
             -artifact_prefix=pst- fuzz_run_pst
+
+      - name: fuzz folder-walk path (~5 min)
+        env:
+          ASAN_OPTIONS: ${{ env.SAN_OPTS }}
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          mkdir -p fuzz_run_walk
+          cp fuzz/corpus/* regression/fuzz-corpus/* fuzz_run_walk/ 2>/dev/null || true
+          ./fuzz_pst_walk -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
+            -artifact_prefix=walk- fuzz_run_walk
 
       - name: upload crash artifacts
         if: failure()
@@ -125,6 +138,8 @@ jobs:
             fuzz/fuzz_lzfu.c src/lzfu.c src/debug.c -o replay_lzfu
           clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SANF \
             fuzz/fuzz_pst_open.c $COMMON_SRCS -lz -o replay_pst_full
+          clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SANF \
+            fuzz/fuzz_pst_walk.c $COMMON_SRCS -lz -o replay_walk
 
       - name: replay pinned regression corpus under sanitizers
         env:
@@ -140,6 +155,7 @@ jobs:
           # Each harness runs the fixed inputs (libFuzzer replays argv files).
           ./replay_lzfu "${files[@]}"
           ./replay_pst_full "${files[@]}"
+          ./replay_walk "${files[@]}"
 
   static-analysis:
     runs-on: ubuntu-latest
