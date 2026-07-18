@@ -2280,18 +2280,55 @@ static int pst_process(uint64_t block_id, pst_mapi_object *list, pst_item *item,
                 case PST_ATTRIB_HEADER: // CUSTOM attribute for saying the Extra Headers
                     if (list->elements[x]->extra) {
                         if (list->elements[x]->type == 0x0101e) {
-                            // an array of strings, rather than a single string
+                            // an array of strings, rather than a single string.
+                            // The array count, the per-string offsets and the
+                            // implied string lengths all come straight from the
+                            // untrusted .pst element data, so every read below is
+                            // bounds-checked against the element size. Without
+                            // these checks a malformed element yields an
+                            // out-of-bounds heap read (CWE-125) whose contents
+                            // leak into the parsed output.
                             int32_t string_length, i, offset, next_offset;
                             int32_t p = 0;
-                            int32_t array_element_count = PST_LE_GET_INT32(list->elements[x]->data); p+=4;
+                            size_t  data_size = list->elements[x]->size;
+                            char   *data_ptr  = list->elements[x]->data;
+                            // Need at least the 4-byte element count, and the
+                            // size must be representable as a signed offset.
+                            if (!data_ptr || data_size < 4 || data_size > (size_t)INT32_MAX) {
+                                DEBUG_WARN(("0x0101e array too small/large [%zu bytes]; skipping\n", data_size));
+                                break;
+                            }
+                            int32_t array_element_count = PST_LE_GET_INT32(data_ptr); p+=4;
                             for (i = 1; i <= array_element_count; i++) {
+                                // Read this string's start offset (4 bytes at p).
+                                if (p < 0 || (size_t)p + 4 > data_size) {
+                                    DEBUG_WARN(("0x0101e offset table runs past end of element; stopping\n"));
+                                    break;
+                                }
+                                offset = PST_LE_GET_INT32(data_ptr + p); p+=4;
+                                if (i == array_element_count) {
+                                    next_offset = (int32_t)data_size;
+                                } else {
+                                    // Peek the next string's start (does not advance p).
+                                    if (p < 0 || (size_t)p + 4 > data_size) {
+                                        DEBUG_WARN(("0x0101e offset table runs past end of element; stopping\n"));
+                                        break;
+                                    }
+                                    next_offset = PST_LE_GET_INT32(data_ptr + p);
+                                }
+                                // The [offset, next_offset) slice must lie within
+                                // the element and be non-negative in length.
+                                if (offset < 0 || next_offset < offset ||
+                                    (size_t)next_offset > data_size) {
+                                    DEBUG_WARN(("0x0101e string [%d,%d) out of bounds for %zu-byte element; stopping\n",
+                                                offset, next_offset, data_size));
+                                    break;
+                                }
+                                string_length = next_offset - offset;
                                 pst_item_extra_field *ef = (pst_item_extra_field*) pst_malloc(sizeof(pst_item_extra_field));
                                 memset(ef, 0, sizeof(pst_item_extra_field));
-                                offset      = PST_LE_GET_INT32(list->elements[x]->data + p); p+=4;
-                                next_offset = (i == array_element_count) ? (int32_t)list->elements[x]->size : PST_LE_GET_INT32(list->elements[x]->data + p);
-                                string_length = next_offset - offset;
                                 ef->value = pst_malloc(string_length + 1);
-                                memcpy(ef->value, list->elements[x]->data + offset, string_length);
+                                memcpy(ef->value, data_ptr + offset, string_length);
                                 ef->value[string_length] = '\0';
                                 ef->field_name = strdup(list->elements[x]->extra);
                                 ef->next       = item->extra_fields;
