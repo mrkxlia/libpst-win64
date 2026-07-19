@@ -77,8 +77,9 @@ jobs:
           mkdir -p fuzz_run_lzfu
           cp fuzz/corpus/* fuzz_run_lzfu/ 2>/dev/null || true
           cp regression/fuzz-corpus/* fuzz_run_lzfu/ 2>/dev/null || true
+          cp tests/fixtures/dist-list.pst fuzz_run_lzfu/ 2>/dev/null || true
           ./fuzz_lzfu -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
-            -artifact_prefix=lzfu- fuzz_run_lzfu
+            -dict=fuzz/pst.dict -artifact_prefix=lzfu- fuzz_run_lzfu
 
       - name: fuzz core parse path (~5 min)
         env:
@@ -87,8 +88,9 @@ jobs:
         run: |
           mkdir -p fuzz_run_pst
           cp fuzz/corpus/* regression/fuzz-corpus/* fuzz_run_pst/ 2>/dev/null || true
+          cp tests/fixtures/dist-list.pst fuzz_run_pst/ 2>/dev/null || true
           ./fuzz_pst_open -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
-            -artifact_prefix=pst- fuzz_run_pst
+            -dict=fuzz/pst.dict -artifact_prefix=pst- fuzz_run_pst
 
       - name: fuzz folder-walk path (~5 min)
         env:
@@ -97,8 +99,9 @@ jobs:
         run: |
           mkdir -p fuzz_run_walk
           cp fuzz/corpus/* regression/fuzz-corpus/* fuzz_run_walk/ 2>/dev/null || true
+          cp tests/fixtures/dist-list.pst fuzz_run_walk/ 2>/dev/null || true
           ./fuzz_pst_walk -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
-            -artifact_prefix=walk- fuzz_run_walk
+            -dict=fuzz/pst.dict -artifact_prefix=walk- fuzz_run_walk
 
       - name: upload crash artifacts
         if: failure()
@@ -108,6 +111,7 @@ jobs:
           path: |
             lzfu-*
             pst-*
+            walk-*
           if-no-files-found: ignore
 
   asan-ubsan:
@@ -141,17 +145,29 @@ jobs:
           clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SANF \
             fuzz/fuzz_pst_walk.c $COMMON_SRCS -lz -o replay_walk
 
-      - name: replay pinned regression corpus under sanitizers
+      - name: LE-macro UBSan unit test
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          # Deterministically catches signed-shift UB in the PST_LE_GET_*
+          # little-endian accessors (src/define.h). -I src provides define.h,
+          # -I . provides the generated config.h.
+          clang -fsanitize=undefined -fno-sanitize-recover=undefined \
+            -fno-sanitize=alignment -DHAVE_CONFIG_H -I src -I . \
+            tests/test_le_macros.c -o test_le_macros
+          ./test_le_macros
+
+      - name: replay pinned regression corpus + valid fixture under sanitizers
         env:
           ASAN_OPTIONS: ${{ env.SAN_OPTS }}:halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           shopt -s nullglob
-          files=(regression/fuzz-corpus/* fuzz/corpus/*)
+          files=(regression/fuzz-corpus/* fuzz/corpus/* tests/fixtures/dist-list.pst)
           if [ ${#files[@]} -eq 0 ]; then
             echo "no corpus files to replay"; exit 0
           fi
-          echo "replaying ${#files[@]} inputs through both harnesses"
+          echo "replaying ${#files[@]} inputs through all harnesses"
           # Each harness runs the fixed inputs (libFuzzer replays argv files).
           ./replay_lzfu "${files[@]}"
           ./replay_pst_full "${files[@]}"
@@ -211,4 +227,78 @@ jobs:
           path: |
             cppcheck.txt
             clang-tidy.txt
+          if-no-files-found: ignore
+
+  coverage:
+    # Measures how much of the core parser the corpus actually reaches, and
+    # quantifies the coverage the committed valid PST fixture unlocks over the
+    # small adversarial seeds alone. Report only; never gates.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm autoconf automake libtool \
+            autoconf-archive gettext autopoint pkg-config zlib1g-dev libgsf-1-dev
+
+      - name: generate config.h
+        run: |
+          autoreconf -fiv
+          ./configure --enable-python=no --enable-dii=no
+
+      - name: build coverage-instrumented walk harness
+        run: |
+          # Source-based coverage + libFuzzer replay driver. -fno-sanitize=alignment
+          # for the same packed-struct reason documented in the fuzz job.
+          clang -g -O0 -DHAVE_CONFIG_H -I . -I src \
+            -fsanitize=fuzzer -fno-sanitize=alignment \
+            -fprofile-instr-generate -fcoverage-mapping \
+            fuzz/fuzz_pst_walk.c $COMMON_SRCS -lz -o cov_walk
+
+      - name: measure coverage — adversarial seeds only vs. + valid fixture
+        run: |
+          set -x
+          SRCS="src/libpst.c src/lzfu.c src/vbuf.c src/timeconv.c src/libstrfunc.c"
+
+          # Baseline: every adversarial seed EXCEPT the valid PST fixture.
+          mkdir -p corpus_base corpus_full
+          cp fuzz/corpus/* regression/fuzz-corpus/* corpus_base/ 2>/dev/null || true
+          cp corpus_base/* corpus_full/ 2>/dev/null || true
+          cp tests/fixtures/dist-list.pst corpus_full/ 2>/dev/null || true
+
+          LLVM_PROFILE_FILE=base.profraw ./cov_walk corpus_base -runs=0 || true
+          llvm-profdata merge -sparse base.profraw -o base.profdata
+          llvm-cov report ./cov_walk -instr-profile=base.profdata $SRCS > cov_base.txt || true
+
+          LLVM_PROFILE_FILE=full.profraw ./cov_walk corpus_full -runs=0 || true
+          llvm-profdata merge -sparse full.profraw -o full.profdata
+          llvm-cov report ./cov_walk -instr-profile=full.profdata $SRCS > cov_full.txt || true
+
+          base_line=$(awk '/^TOTAL/{print $4}' cov_base.txt)
+          full_line=$(awk '/^TOTAL/{print $4}' cov_full.txt)
+          {
+            echo "## Parser coverage (libFuzzer walk harness, corpus replay)"
+            echo ""
+            echo "| corpus | region coverage (TOTAL) |"
+            echo "| --- | --- |"
+            echo "| adversarial seeds only | ${base_line:-n/a} |"
+            echo "| + valid dist-list.pst fixture | ${full_line:-n/a} |"
+            echo ""
+            echo "<details><summary>full llvm-cov report (with fixture)</summary>"
+            echo ""
+            echo '```'
+            cat cov_full.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            cov_base.txt
+            cov_full.txt
           if-no-files-found: ignore

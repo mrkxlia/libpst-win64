@@ -1,0 +1,46 @@
+# libFuzzer dictionary for the PST on-disk format.
+# Tokens that steer mutations toward structurally meaningful inputs so the
+# fuzzers reach the index/descriptor/block parsers instead of bouncing off the
+# magic-number check. Derived from the PST/OST format ([MS-PST]) and libpst's
+# own parser (src/libpst.c).
+
+# File header magic ("!BDN") and the partition magic that follows it.
+magic_bdn="!BDN"
+magic_sm="SM"
+
+# index_type byte values libpst recognises (offset 0x0A).
+idx_ansi_0e="\x0e"
+idx_ansi_0f="\x0f"
+idx_unicode_17="\x17"
+idx_unicode_15="\x15"
+idx_4k_24="\x24"
+
+# Encryption byte (offset 0x0201 ANSI / 0x0201 Unicode): none / compressible / high.
+enc_none="\x00"
+enc_compressible="\x01"
+enc_high="\x02"
+
+# Block trailer / signature constants used by pst_parse_block and friends.
+blk_bcec="\xec\xbc"
+blk_7cec="\xec\x7c"
+blk_9c="\x9c"
+blk_a5="\xa5"
+blk_b5="\xb5"
+sig_02b5="\xb5\x02"
+
+# 2-byte and 4-byte all-set / boundary values that exercise size/count fields.
+u16_max="\xff\xff"
+u32_max="\xff\xff\xff\xff"
+zero4="\x00\x00\x00\x00"
+
+# MAPI property reference types that select the LIST_COPY_* copy paths.
+reftype_0002="\x02\x00"
+reftype_0003="\x03\x00"
+reftype_000b="\x0b\x00"
+reftype_001e="\x1e\x00"
+reftype_001f="\x1f\x00"
+reftype_0102="\x02\x01"
+reftype_101e="\x1e\x10"
+
+# LZFU / compressed-RTF magic ("LZFu") consumed by pst_lzfu_decompress.
+lzfu_magic="LZFu"

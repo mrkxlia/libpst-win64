@@ -1,16 +1,17 @@
 """Smoke / integration tests for the libpst_py wheel.
 
-The repository ships no valid .pst fixture (libpst has no PST writer and real
-mailboxes are intentionally not committed), so these tests verify that:
+These tests verify that:
 
-  * the compiled extension imports and exposes the expected API, and
+  * the compiled extension imports and exposes the expected API,
   * the parser handles non-PST / malformed input without crashing — either
-    raising a clean Python exception or returning an empty tree.
+    raising a clean Python exception or returning an empty tree, and
+  * a real, valid PST (tests/fixtures/dist-list.pst) walks end to end,
+    yielding its folder tree and message/contact/calendar data.
 
 The malformed inputs are the fuzzing reproducers pinned under
 regression/fuzz-corpus/, which double as adversarial open() inputs here.
-When a valid .pst fixture is available, set LIBPST_PY_TEST_PST to its path to
-additionally exercise folder-walking and message reading.
+The valid fixture is used automatically; set LIBPST_PY_TEST_PST to point the
+full-walk test at a different .pst instead.
 """
 
 import os
@@ -93,17 +94,28 @@ def test_fuzz_reproducers_do_not_crash(repro):
     )
 
 
+def _default_pst():
+    """The committed valid fixture, or an override via LIBPST_PY_TEST_PST."""
+    env = os.environ.get("LIBPST_PY_TEST_PST")
+    if env:
+        return env
+    fixture = pathlib.Path(__file__).resolve().parent / "fixtures" / "dist-list.pst"
+    return str(fixture) if fixture.is_file() else None
+
+
 @pytest.mark.skipif(
-    not os.environ.get("LIBPST_PY_TEST_PST"),
-    reason="set LIBPST_PY_TEST_PST to a valid .pst to run the full walk test",
+    _default_pst() is None,
+    reason="no valid .pst fixture available (set LIBPST_PY_TEST_PST or commit tests/fixtures/dist-list.pst)",
 )
 def test_full_walk_with_real_pst():
-    path = os.environ["LIBPST_PY_TEST_PST"]
+    path = _default_pst()
     pst = libpst_py.open(path)
     total = 0
+    folders = 0
 
     def walk(folder):
-        nonlocal total
+        nonlocal total, folders
+        folders += 1
         total += len(folder.messages)
         for m in folder.messages:
             _ = (m.subject, m.sender, m.date, m.plain_text, m.attachment_names)
@@ -111,4 +123,6 @@ def test_full_walk_with_real_pst():
             walk(sub)
 
     walk(pst.root)
+    # dist-list.pst has a full standard folder tree; a real walk must see it.
+    assert folders > 1, f"expected a multi-folder tree, walked {folders}"
     assert total >= 0
