@@ -41,9 +41,15 @@ test-command = "pytest {project}/tests -q"
 before-all = "yum install -y zlib-devel || apk add zlib-dev || true"
 
 [tool.cibuildwheel.macos]
-# zlib and iconv ship with the macOS SDK.
+# zlib and iconv ship with the macOS SDK. Build a single universal2 wheel
+# (x86_64 + arm64) from the arm64 runner, so one macOS wheel covers both
+# architectures and macos-13 (x86_64) is no longer needed in the matrix.
+archs = ["universal2"]
 
 [tool.cibuildwheel.windows]
-# libpst's core needs iconv, which MSVC/Windows does not provide in libc.
-# See README.win64.md — Windows wheels are not built here; Windows users use
-# readpst.exe from the win64 Release instead.
+# The libpst core needs iconv and zlib, neither of which the MSVC runtime
+# provides. Rather than depend on external DLLs, CMakeLists.txt compiles
+# vendored win-iconv (third_party/win-iconv, public domain) straight into the
+# extension and fetches + statically links zlib. The resulting wheel is
+# self-contained, so no repair/DLL-bundling step is required.
+archs = ["AMD64"]
