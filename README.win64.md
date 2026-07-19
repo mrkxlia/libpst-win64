@@ -10,9 +10,22 @@
   公式パッケージメンテナ (Paul Wise) が管理するリポジトリ。原作者 Carl Byington の
   公式配布 ([five-ten-sg.com/libpst](https://www.five-ten-sg.com/libpst/)) は 0.6.76
   (2021-03-27) を最後に休眠しており、こちらが事実上の維持されている上流である
-- 本フォークはソースコードを**一切改変しない**。追加するのはビルド用の
-  GitHub Actions ワークフロー (`.github/workflows/build-windows.yml`) と本READMEのみ
-- 上流の更新は `git fetch upstream && git merge` で追従する
+- **フォーク独自の変更方針**: 当初は「ソース無改変 + ビルド CI 追加のみ」だったが、
+  現在はセキュリティ強化のため上流ソース (`src/`) にもパッチを保持している。
+  変更は大きく以下の3系統:
+  1. **メモリ安全性の修正** — fuzzing (libFuzzer + ASAN/UBSAN) で発見した
+     ヒープ境界外読み書き・NULL 参照・未初期化解放・整数シフト UB 等を修正
+     (`src/libpst.c`, `src/lzfu.c`, `src/vbuf.c`, `src/timeconv.c`,
+     `src/readpst.c`, `src/define.h`)。パス・トラバーサル / MIME ヘッダ
+     インジェクション対策 (`readpst.c`) も含む
+  2. **Python ライブラリ化** — Boost.Python 実装を pybind11 (`python/pybind_libpst.cpp`)
+     へ置き換え、`libpst_py` として wheel 配布 (`CMakeLists.txt` / `pyproject.toml`)
+  3. **ビルド/CI** — Windows `readpst.exe` ビルド、Linux `-Werror` ビルド、
+     セキュリティ検査 (fuzz/ASAN/静的解析/カバレッジ)、wheel ビルド
+- これらメモリ安全性修正は上流 (pst-format/libpst) へ還元予定であり、
+  再現コーパスと合わせて `upstream-patches/` に整理している
+- 上流の更新は `git fetch upstream && git merge` で追従する。上流と衝突しうる
+  のは上記パッチのみで、その一覧は `upstream-patches/README.md` を参照
 
 ## ビルド方式
 

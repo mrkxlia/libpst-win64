@@ -765,13 +765,16 @@ int pst_load_extended_attributes(pst_file *pf) {
     }
 
     if (!buffer) {
+        pst_free_id2(id2_head);   // was leaked on this early return
         pst_free_list(list);
         DEBUG_WARN(("No extended attributes buffer found. Not processing\n"));
         DEBUG_RET();
         return 0;
     }
 
-    while (bptr < bsize) {
+    // Each record is 8 bytes (uint32 extended + uint16 type + uint16 map);
+    // require a whole record so the PST_LE_GET reads stay inside `buffer`.
+    while (bptr + 8 <= bsize) {
         int err = 0;
         xattrib.extended= PST_LE_GET_UINT32(buffer+bptr), bptr += 4;
         xattrib.type    = PST_LE_GET_UINT16(buffer+bptr), bptr += 2;
@@ -783,18 +786,30 @@ int pst_load_extended_attributes(pst_file *pf) {
         DEBUG_INFO(("xattrib: ext = %#" PRIx32 ", type = %#" PRIx16 ", map = %#" PRIx16 "\n",
              xattrib.extended, xattrib.type, xattrib.map));
         if (xattrib.type & 0x0001) { // if the Bit 1 is set
-            // pointer to Unicode field in buffer
-            if (xattrib.extended < hsize) {
+            // pointer to Unicode field in buffer. At headerbuffer[extended]
+            // sits a 32-bit length prefix followed by that many bytes of
+            // UTF-16 data. Both the prefix and the payload it announces must
+            // lie entirely within headerbuffer, and the (signed) length must
+            // be non-negative — the announced length is fully attacker
+            // controlled, so an unchecked value forces a huge out-of-bounds
+            // read (found by fuzzing a crafted 0x61 extended-attribute block).
+            if (headerbuffer && (size_t)xattrib.extended + sizeof(tint) <= hsize) {
                 char *wt;
                 // copy the size of the header. It is 32 bit int
                 memcpy(&tint, &(headerbuffer[xattrib.extended]), sizeof(tint));
                 LE32_CPU(tint);
-                wt = (char*) pst_malloc((size_t)(tint+2)); // plus 2 for a uni-code zero
-                memset(wt, 0, (size_t)(tint+2));
-                memcpy(wt, &(headerbuffer[xattrib.extended+sizeof(tint)]), (size_t)tint);
-                ptr->data = pst_wide_to_single(wt, (size_t)tint);
-                free(wt);
-                DEBUG_INFO(("Mapped attribute %#" PRIx32 " to %s\n", ptr->map, (char*)ptr->data));
+                if (tint >= 0 &&
+                    (size_t)tint <= hsize - (size_t)xattrib.extended - sizeof(tint)) {
+                    wt = (char*) pst_malloc((size_t)(tint+2)); // plus 2 for a uni-code zero
+                    memset(wt, 0, (size_t)(tint+2));
+                    memcpy(wt, &(headerbuffer[xattrib.extended+sizeof(tint)]), (size_t)tint);
+                    ptr->data = pst_wide_to_single(wt, (size_t)tint);
+                    free(wt);
+                    DEBUG_INFO(("Mapped attribute %#" PRIx32 " to %s\n", ptr->map, (char*)ptr->data));
+                } else {
+                    DEBUG_WARN(("xattrib header length %" PRId32 " out of bounds\n", tint));
+                    err = 1;
+                }
             } else {
                 DEBUG_INFO(("Cannot read outside of buffer [%" PRIu32 " !< %zu]\n", xattrib.extended, hsize));
                 err = 1;
@@ -1538,6 +1553,7 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
     int      block_type;
     uint32_t rec_size = 0;
     char*    list_start;
+    char*    list_end = NULL;   // end of the mapi element list (block-type dependent)
     char*    fr_ptr;
     char*    to_ptr;
     char*    ind2_end = NULL;
@@ -1626,7 +1642,18 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
             DEBUG_RET();
             return NULL;
         }
-        subblocks.subs = malloc(sizeof(pst_subblock) * subblocks.subblock_count);
+        // calloc (not malloc): the parse loop below can break early, leaving
+        // later entries untouched. freeall() walks all subblock_count entries
+        // and frees subs[i].buf, so every .buf must start NULL — otherwise it
+        // frees an uninitialized (garbage) pointer and crashes.
+        subblocks.subs = calloc(subblocks.subblock_count, sizeof(pst_subblock));
+        if (!subblocks.subs) {
+            DEBUG_WARN(("cannot allocate %" PRIu32 " type-3 sub-blocks for id %#" PRIx64 "\n",
+                        (uint32_t)subblocks.subblock_count, block_id));
+            if (buf) free(buf);
+            DEBUG_RET();
+            return NULL;
+        }
         for (i=0; i<subblocks.subblock_count; i++) {
             subblocks.subs[i].buf       = NULL;
             subblocks.subs[i].read_size = 0;
@@ -1711,6 +1738,7 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
         }
         list_start = block_offset2.from;
         to_ptr     = block_offset2.to;
+        list_end   = block_offset2.to;
         num_mapi_elements = (to_ptr - list_start)/sizeof(table_rec);
         num_mapi_objects  = 1; // only going to be one object in these blocks
     }
@@ -1743,6 +1771,10 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
         LE16_CPU(seven_c_blk.u8);
 
         list_start = fr_ptr + sizeof(seven_c_blk); // the list of item numbers start after this record
+        list_end   = block_offset3.to;              // ...and cannot run past the 7C region
+        // seven_c_blk.item_count is attacker-controlled and NOT derived from
+        // the region size (unlike the 0xBCEC path), so the per-element reads
+        // below must be bounded by list_end.
 
         if (seven_c_blk.seven_c != 0x7C) { // this would mean it isn't a 7C block!
             DEBUG_WARN(("Error. There isn't a 7C where I want to see 7C!\n"));
@@ -1834,6 +1866,15 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
         for (count_mapi_elements=0; count_mapi_elements<num_mapi_elements; count_mapi_elements++) { //we will increase fr_ptr as we progress through index
             char* value_pointer = NULL;     // needed for block type 2 with values larger than 4 bytes
             size_t value_size = 0;
+            // Each iteration reads one fixed-size record from fr_ptr; stop if
+            // the next record would run past the end of the list region (the
+            // element count can be attacker-controlled — see the 0x7CEC path).
+            size_t rec_bytes = (block_type == 1) ? sizeof(table_rec) : sizeof(table2_rec);
+            if (!list_end || fr_ptr < list_start ||
+                (size_t)(list_end - fr_ptr) < rec_bytes) {
+                DEBUG_WARN(("mapi element list runs past the end of the block\n"));
+                break;
+            }
             if (block_type == 1) {
                 memcpy(&table_rec, fr_ptr, sizeof(table_rec));
                 LE16_CPU(table_rec.type);
@@ -2030,13 +2071,19 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
             }
             x++;
         }
-        DEBUG_INFO(("increasing ind2_ptr by %" PRIi32 " [%#" PRIx32 "] bytes. Was %p, Now %p\n", rec_size, rec_size, (void*)ind2_ptr, (void*)(ind2_ptr+rec_size)));
-        ind2_ptr += rec_size;
-        // ind2 rows do not get split between blocks. See PST spec, 2.3.4.4 "Row Matrix".
-        if (ind2_ptr + rec_size > ind2_block_start + ind2_max_block_size) {
-            ind2_block_start += ind2_max_block_size;
-            DEBUG_INFO(("advancing ind2_ptr to next block. Was %p, Now %p\n", (void*)ind2_ptr, (void*)ind2_block_start));
-            ind2_ptr = ind2_block_start;
+        // ind2_ptr is only set for 0x7cec blocks; for 0xbcec blocks it stays
+        // NULL and this row-advance is unused. Guard it so we never do pointer
+        // arithmetic on a NULL base (undefined behavior, and NULL+0 trips UBSan
+        // even on well-formed PSTs).
+        if (ind2_ptr) {
+            DEBUG_INFO(("increasing ind2_ptr by %" PRIi32 " [%#" PRIx32 "] bytes. Was %p, Now %p\n", rec_size, rec_size, (void*)ind2_ptr, (void*)(ind2_ptr+rec_size)));
+            ind2_ptr += rec_size;
+            // ind2 rows do not get split between blocks. See PST spec, 2.3.4.4 "Row Matrix".
+            if (ind2_ptr + rec_size > ind2_block_start + ind2_max_block_size) {
+                ind2_block_start += ind2_max_block_size;
+                DEBUG_INFO(("advancing ind2_ptr to next block. Was %p, Now %p\n", (void*)ind2_ptr, (void*)ind2_block_start));
+                ind2_ptr = ind2_block_start;
+            }
         }
     }
     freeall(&subblocks, &block_offset1, &block_offset2, &block_offset3, &block_offset4, &block_offset5, &block_offset6, &block_offset7);
@@ -2061,7 +2108,14 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
 // malloc space and copy the current item's data null terminated
 #define LIST_COPY(targ, type) {                                    \
     targ = type pst_realloc(targ, list->elements[x]->size+1);      \
-    memcpy(targ, list->elements[x]->data, list->elements[x]->size);\
+    /* A crafted PST can present an element with a non-zero size but a  \
+     * NULL data pointer; memcpy's source is declared non-null, so copy \
+     * only when there is real data and zero-fill otherwise so callers  \
+     * never read uninitialized bytes. */                          \
+    if (list->elements[x]->data)                                   \
+        memcpy(targ, list->elements[x]->data, list->elements[x]->size); \
+    else                                                           \
+        memset(targ, 0, list->elements[x]->size);                  \
     memset(((char*)targ)+list->elements[x]->size, 0, (size_t)1);   \
 }
 
@@ -2536,11 +2590,19 @@ static int pst_process(uint64_t block_id, pst_mapi_object *list, pst_item *item,
                         if ((list->elements[x]->size > 2) && (((uint8_t)list->elements[x]->data[0]) < 0x20)) {
                             off = 2;
                         }
-                        list->elements[x]->data += off;
-                        list->elements[x]->size -= off;
+                        // off is only non-zero when data is a >2 byte buffer;
+                        // when off==0 the element may have NULL data, and
+                        // `NULL += 0` is undefined behavior. Guard the pointer
+                        // adjustment so it only runs when there is a real skip.
+                        if (off) {
+                            list->elements[x]->data += off;
+                            list->elements[x]->size -= off;
+                        }
                         LIST_COPY_STR("Raw Subject", item->subject);
-                        list->elements[x]->size += off;
-                        list->elements[x]->data -= off;
+                        if (off) {
+                            list->elements[x]->size += off;
+                            list->elements[x]->data -= off;
+                        }
                     }
                     break;
                 case 0x0039: // PR_CLIENT_SUBMIT_TIME Date Email Sent/Created
@@ -4499,6 +4561,11 @@ static size_t pst_finish_cleanup_holder(pst_holder *h, size_t size) {
  *  @return  -1 if a < b, 0 if a==b, 1 if a > b
  */
 int pst_stricmp(char *a, char *b) {
+    // Treat a NULL string as empty so callers that may hold a NULL (e.g. an
+    // absent MAPI field, or strdup() returning NULL under memory pressure)
+    // do not dereference it.
+    if (!a) a = (char*)"";
+    if (!b) b = (char*)"";
     while(*a != '\0' && *b != '\0' && toupper(*a)==toupper(*b)) {
         a++; b++;
     }
@@ -4514,7 +4581,10 @@ int pst_stricmp(char *a, char *b) {
 static int pst_strincmp(char *a, char *b, size_t x) {
     // compare up to x chars in string a and b case-insensitively
     // returns -1 if a < b, 0 if a==b, 1 if a > b
+    // NULL is treated as an empty string (see pst_stricmp).
     size_t y = 0;
+    if (!a) a = (char*)"";
+    if (!b) b = (char*)"";
     while (*a != '\0' && *b != '\0' && y < x && toupper(*a)==toupper(*b)) {
         a++; b++; y++;
     }
@@ -4548,7 +4618,10 @@ static char* pst_wide_to_single(char *wt, size_t size) {
     DEBUG_ENT("pst_wide_to_single");
     x = pst_malloc((size/2)+1);
     y = x;
-    while (size != 0 && *wt != '\0') {
+    // Consume two bytes (one UTF-16 code unit) per step. The guard must be
+    // `size >= 2`, not `size != 0`: an odd size would let `size -= 2` wrap past
+    // zero to SIZE_MAX and read far past the end of the buffer.
+    while (size >= 2 && *wt != '\0') {
         *y = *wt;
         wt+=2;
         size -= 2;

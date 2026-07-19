@@ -55,6 +55,18 @@
 #endif
 
 
+// Some platforms (notably MSVC) do not define PATH_MAX. Fall back to the
+// Windows _MAX_PATH, or a generous default, so the getcwd() path in
+// pst_getcwd() compiles everywhere.
+#ifndef PATH_MAX
+    #ifdef _MAX_PATH
+        #define PATH_MAX _MAX_PATH
+    #else
+        #define PATH_MAX 4096
+    #endif
+#endif
+
+
 #define PERM_DIRS 0777
 
 #ifdef _WIN32
@@ -84,8 +96,13 @@
     #ifndef PRIx64
         #define PRIx64 "I64x"
     #endif
+    // The UCRT (Visual Studio 2015+, _MSC_VER >= 1900) already declares these
+    // in <stdio.h>; re-declaring them there triggers C4273 (inconsistent dll
+    // linkage). Only declare them for older toolchains that lack them.
+    #if !defined(_MSC_VER) || (_MSC_VER < 1900)
     int __cdecl _fseeki64(FILE *, __int64, int);
     __int64 __cdecl _ftelli64(FILE *);
+    #endif
 
     #ifdef __cplusplus
     }
@@ -243,45 +260,38 @@ void *pst_realloc(void *ptr, size_t size);
 #endif // BYTE_ORDER
 
 
+/* Each byte is cast to the *target* unsigned width before shifting. Without
+ * this, a uint8_t operand promotes to (signed) int, so `byte << 24` overflows
+ * int whenever byte >= 0x80 and `byte << 32..56` shifts past the width of int
+ * — both undefined behavior (and the latter silently produces wrong values on
+ * x86, where the shift count is masked). Doing the arithmetic in the exact
+ * unsigned target type is well-defined and yields the intended little-endian
+ * value on every platform. */
 #define PST_LE_GET_UINT64(p) \
-        (uint64_t)((((uint8_t const *)(p))[0] << 0)  |    \
-                   (((uint8_t const *)(p))[1] << 8)  |    \
-                   (((uint8_t const *)(p))[2] << 16) |    \
-                   (((uint8_t const *)(p))[3] << 24) |    \
-                   (((uint8_t const *)(p))[4] << 32) |    \
-                   (((uint8_t const *)(p))[5] << 40) |    \
-                   (((uint8_t const *)(p))[6] << 48) |    \
-                   (((uint8_t const *)(p))[7] << 56))
+        ((uint64_t)((uint64_t)(((uint8_t const *)(p))[0]) << 0)  |    \
+                   ((uint64_t)(((uint8_t const *)(p))[1]) << 8)  |    \
+                   ((uint64_t)(((uint8_t const *)(p))[2]) << 16) |    \
+                   ((uint64_t)(((uint8_t const *)(p))[3]) << 24) |    \
+                   ((uint64_t)(((uint8_t const *)(p))[4]) << 32) |    \
+                   ((uint64_t)(((uint8_t const *)(p))[5]) << 40) |    \
+                   ((uint64_t)(((uint8_t const *)(p))[6]) << 48) |    \
+                   ((uint64_t)(((uint8_t const *)(p))[7]) << 56))
 
-#define PST_LE_GET_INT64(p) \
-        (int64_t)((((uint8_t const *)(p))[0] << 0)  |    \
-                  (((uint8_t const *)(p))[1] << 8)  |    \
-                  (((uint8_t const *)(p))[2] << 16) |    \
-                  (((uint8_t const *)(p))[3] << 24) |    \
-                  (((uint8_t const *)(p))[4] << 32) |    \
-                  (((uint8_t const *)(p))[5] << 40) |    \
-                  (((uint8_t const *)(p))[6] << 48) |    \
-                  (((uint8_t const *)(p))[7] << 56))
+#define PST_LE_GET_INT64(p) ((int64_t)PST_LE_GET_UINT64(p))
 
 #define PST_LE_GET_UINT32(p) \
-        (uint32_t)((((uint8_t const *)(p))[0] << 0)  |    \
-                   (((uint8_t const *)(p))[1] << 8)  |    \
-                   (((uint8_t const *)(p))[2] << 16) |    \
-                   (((uint8_t const *)(p))[3] << 24))
+        ((uint32_t)((uint32_t)(((uint8_t const *)(p))[0]) << 0)  |    \
+                   ((uint32_t)(((uint8_t const *)(p))[1]) << 8)  |    \
+                   ((uint32_t)(((uint8_t const *)(p))[2]) << 16) |    \
+                   ((uint32_t)(((uint8_t const *)(p))[3]) << 24))
 
-#define PST_LE_GET_INT32(p) \
-        (int32_t)((((uint8_t const *)(p))[0] << 0)  |    \
-                  (((uint8_t const *)(p))[1] << 8)  |    \
-                  (((uint8_t const *)(p))[2] << 16) |    \
-                  (((uint8_t const *)(p))[3] << 24))
+#define PST_LE_GET_INT32(p) ((int32_t)PST_LE_GET_UINT32(p))
 
 #define PST_LE_GET_UINT16(p)                  \
-        (uint16_t)((((uint8_t const *)(p))[0] << 0)  |    \
-                   (((uint8_t const *)(p))[1] << 8))
+        ((uint16_t)((uint16_t)(((uint8_t const *)(p))[0]) << 0)  |    \
+                   ((uint16_t)(((uint8_t const *)(p))[1]) << 8))
 
-#define PST_LE_GET_INT16(p)               \
-        (int16_t)((((uint8_t const *)(p))[0] << 0)  |    \
-                   (((uint8_t const *)(p))[1] << 8))
+#define PST_LE_GET_INT16(p) ((int16_t)PST_LE_GET_UINT16(p))
 
 #define PST_LE_GET_UINT8(p) (*(uint8_t const *)(p))
 

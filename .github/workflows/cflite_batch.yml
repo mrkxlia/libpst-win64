@@ -1,0 +1,37 @@
+name: ClusterFuzzLite batch fuzzing
+
+# Longer, scheduled fuzzing that grows a persistent corpus over time — the
+# continuous counterpart to the short PR-time fuzz in security.yml. Corpus
+# persistence and crash reporting use the ClusterFuzzLite defaults; to retain
+# the corpus across runs, configure a storage location per
+# https://google.github.io/clusterfuzzlite/ (a dedicated *-storage repo/branch).
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # daily, off-peak
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  batch-fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, undefined]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build fuzzers (${{ matrix.sanitizer }})
+        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
+        with:
+          language: c
+          sanitizer: ${{ matrix.sanitizer }}
+      - name: Run fuzzers (${{ matrix.sanitizer }})
+        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 900
+          mode: 'batch'
+          sanitizer: ${{ matrix.sanitizer }}

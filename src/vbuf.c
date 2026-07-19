@@ -197,8 +197,16 @@ void pst_vbgrow(pst_vbuf *vb, size_t len)
 void pst_vbset(pst_vbuf * vb, void *b, size_t len)
 {
     pst_vbresize(vb, len);
-    memcpy(vb->b, b, len);
-    vb->dlen = len;
+    // A crafted PST can yield an element with a non-zero size but a NULL data
+    // pointer; passing that NULL to memcpy is undefined behavior (its source
+    // argument is declared non-null) even when len is 0. Copy only when there
+    // is a real source, and never expose uninitialized bytes as content.
+    if (b) {
+        memcpy(vb->b, b, len);
+        vb->dlen = len;
+    } else {
+        vb->dlen = 0;
+    }
 }
 
 
@@ -210,6 +218,7 @@ void pst_vbappend(pst_vbuf *vb, void *b, size_t len)
         pst_vbset(vb, b, len);
         return;
     }
+    if (!b) return;   // nothing to append; see pst_vbset for why NULL is guarded
     pst_vbgrow(vb, len);
     memcpy(vb->b + vb->dlen, b, len);
     vb->dlen += len;

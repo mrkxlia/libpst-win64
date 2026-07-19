@@ -34,10 +34,41 @@ check_include_file(wchar.h      HAVE_WCHAR_H)
 check_function_exists(get_current_dir_name HAVE_GET_CURRENT_DIR_NAME)
 
 # --- zlib (required by the libpst core for compressed blocks) ---
-find_package(ZLIB REQUIRED)
+# On Windows/MSVC there is no system zlib, so fetch and statically link it into
+# the extension. Elsewhere use the system zlib.
+set(LIBPST_ZLIB_TARGET "")
+if(WIN32)
+  include(FetchContent)
+  set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    zlib
+    GIT_REPOSITORY https://github.com/madler/zlib.git
+    GIT_TAG        v1.3.1
+  )
+  FetchContent_MakeAvailable(zlib)
+  # zlib's CMake exports a static target `zlibstatic` and a shared `zlib`.
+  set(LIBPST_ZLIB_TARGET zlibstatic)
+  set(ZLIB_INCLUDE_DIRS
+    ${zlib_SOURCE_DIR}
+    ${zlib_BINARY_DIR}
+  )
+  set(ZLIB_LIBRARIES ${LIBPST_ZLIB_TARGET})
+else()
+  find_package(ZLIB REQUIRED)
+endif()
 
 # --- iconv detection ---
-# glibc provides iconv in libc; elsewhere it lives in a separate libiconv.
+# glibc provides iconv in libc; elsewhere it lives in a separate libiconv. On
+# Windows/MSVC neither exists, so compile the vendored win-iconv straight in.
+set(WIN_ICONV_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/win-iconv)
+if(WIN32)
+  set(HAVE_ICONV 1)
+  set(ICONV_CONST "const")
+  set(ICONV_INCLUDE_DIR ${WIN_ICONV_DIR})
+  set(ICONV_LIBRARIES "")
+  set(ICONV_SOURCES ${WIN_ICONV_DIR}/win_iconv.c)
+else()
+set(ICONV_SOURCES "")
 find_path(ICONV_INCLUDE_DIR iconv.h)
 find_library(ICONV_LIB NAMES iconv libiconv)
 set(ICONV_LIBRARIES "")
@@ -77,6 +108,7 @@ if(HAVE_ICONV)
   unset(CMAKE_REQUIRED_INCLUDES)
   unset(CMAKE_REQUIRED_LIBRARIES)
 endif()
+endif()  # end of non-Windows iconv detection
 
 if(NOT HAVE_ICONV)
   message(FATAL_ERROR "libpst-py requires iconv (system libc or libiconv)")
@@ -102,9 +134,16 @@ set(LIBPST_CORE
 pybind11_add_module(_core
   python/pybind_libpst.cpp
   ${LIBPST_CORE}
+  ${ICONV_SOURCES}
 )
 
 target_compile_definitions(_core PRIVATE HAVE_CONFIG_H)
+if(WIN32)
+  # win_iconv.c links against the Win32 codepage/MLang APIs.
+  target_link_libraries(_core PRIVATE kernel32)
+  # Keep the vendored win-iconv translation unit's own warnings quiet.
+  set_source_files_properties(${ICONV_SOURCES} PROPERTIES COMPILE_OPTIONS "")
+endif()
 target_include_directories(_core PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR}/generated
   ${CMAKE_CURRENT_SOURCE_DIR}/src
