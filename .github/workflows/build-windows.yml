@@ -15,9 +15,18 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - win64-build
+      - main
     tags:
       - "v*"
+    # Only rebuild/republish readpst.exe when its inputs (or the release tag)
+    # change — not on doc-only pushes to main. (Path filters are ignored for
+    # tag pushes, so a v* tag always builds.)
+    paths:
+      - "src/**"
+      - "configure.ac"
+      - "Makefile.am"
+      - ".github/workflows/build-windows.yml"
+      - ".github/RELEASE_TAG"
 
 permissions:
   contents: write
@@ -163,12 +172,12 @@ jobs:
 
       # Release作成は2経路:
       # (1) タグ push (refs/tags/v*) — 従来通り
-      # (2) win64-build への push で .github/RELEASE_TAG が存在し、その名前の
+      # (2) main への push で .github/RELEASE_TAG が存在し、その名前の
       #     Release がまだ無い場合 — gh release create --target が API 経由で
       #     タグも作成する (ビルド環境から git のタグ push が許可されない
-      #     場合の経路)
+      #     場合の経路)。wheels.yml の release ジョブが同じ Release に wheel を添付する。
       - name: release
-        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/win64-build'
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -178,14 +187,19 @@ jobs:
           } elseif (Test-Path .github/RELEASE_TAG) {
             $tag = (Get-Content .github/RELEASE_TAG -Raw).Trim()
             if (-not $tag) { Write-Host 'RELEASE_TAG is empty; skip'; exit 0 }
-            gh release view $tag *> $null
-            if ($LASTEXITCODE -eq 0) { Write-Host "release $tag already exists; skip"; exit 0 }
           } else {
             Write-Host 'no RELEASE_TAG; skip'
             exit 0
           }
-          Compress-Archive -Path dist\* -DestinationPath "readpst-win64-$tag.zip"
-          gh release create "$tag" "readpst-win64-$tag.zip" `
-            --target "$env:GITHUB_SHA" `
-            --title "readpst.exe $tag (win64, bundled DLLs)" `
-            --notes-file dist/SHA256SUMS
+          Compress-Archive -Path dist\* -DestinationPath "readpst-win64-$tag.zip" -Force
+          # Idempotent: create the Release if it does not exist yet (wheels.yml
+          # may have created it first), then attach the readpst zip with
+          # --clobber so cross-workflow ordering does not drop either artifact.
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$tag" `
+              --target "$env:GITHUB_SHA" `
+              --title "libpst-win64 $tag — readpst.exe + libpst_py wheels" `
+              --notes-file dist/SHA256SUMS
+          }
+          gh release upload "$tag" "readpst-win64-$tag.zip" --clobber
