@@ -55,6 +55,18 @@
 #endif
 
 
+// Some platforms (notably MSVC) do not define PATH_MAX. Fall back to the
+// Windows _MAX_PATH, or a generous default, so the getcwd() path in
+// pst_getcwd() compiles everywhere.
+#ifndef PATH_MAX
+    #ifdef _MAX_PATH
+        #define PATH_MAX _MAX_PATH
+    #else
+        #define PATH_MAX 4096
+    #endif
+#endif
+
+
 #define PERM_DIRS 0777
 
 #ifdef _WIN32
@@ -84,8 +96,13 @@
     #ifndef PRIx64
         #define PRIx64 "I64x"
     #endif
+    // The UCRT (Visual Studio 2015+, _MSC_VER >= 1900) already declares these
+    // in <stdio.h>; re-declaring them there triggers C4273 (inconsistent dll
+    // linkage). Only declare them for older toolchains that lack them.
+    #if !defined(_MSC_VER) || (_MSC_VER < 1900)
     int __cdecl _fseeki64(FILE *, __int64, int);
     __int64 __cdecl _ftelli64(FILE *);
+    #endif
 
     #ifdef __cplusplus
     }
