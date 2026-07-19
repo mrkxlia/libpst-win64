@@ -9,8 +9,10 @@ name: Python wheels (cibuildwheel)
 on:
   push:
     branches:
-      - win64-build
+      - main
       - claude/new-session-gpnx2m
+    tags:
+      - "v*"
     paths:
       - "python/pybind_libpst.cpp"
       - "libpst_py/**"
@@ -20,6 +22,7 @@ on:
       - "pyproject.toml"
       - "tests/**"
       - ".github/workflows/wheels.yml"
+      - ".github/RELEASE_TAG"
   pull_request:
     paths:
       - "python/pybind_libpst.cpp"
@@ -32,8 +35,9 @@ on:
       - ".github/workflows/wheels.yml"
   workflow_dispatch:
 
+# The publish-release job needs write access to attach wheels to a Release.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   # Fast always-on integration test on Linux: build one wheel, install it,
@@ -133,3 +137,56 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
           if-no-files-found: error
+
+  # Publish the built wheels (+ sdist) to the GitHub Release named by
+  # .github/RELEASE_TAG (or the pushed tag), so users can `pip install` without
+  # a compiler. Runs only on a push to main or a v* tag — never on PRs. Shares
+  # the Release with build-windows.yml (readpst.exe); both create-if-missing and
+  # upload with --clobber, so their run order does not matter.
+  publish-release:
+    name: publish wheels to Release
+    needs: [build-wheels, sdist]
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' &&
+      (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: collect wheels + sdist
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+      - name: publish to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ -f .github/RELEASE_TAG ]]; then
+            tag="$(tr -d '[:space:]' < .github/RELEASE_TAG)"
+          else
+            echo "no tag / RELEASE_TAG; nothing to publish"; exit 0
+          fi
+          [ -n "$tag" ] || { echo "empty RELEASE_TAG; skip"; exit 0; }
+          echo "publishing wheels to release $tag"
+          ls -l dist
+          # Create the release if neither this job nor build-windows.yml has yet;
+          # ignore a create race (the other workflow may win) and rely on the
+          # idempotent --clobber upload.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --target "$GITHUB_SHA" \
+              --title "libpst-win64 $tag — readpst.exe + libpst_py wheels" \
+              --notes "libpst_py wheels (Linux manylinux / macOS universal2 / Windows AMD64, CPython 3.10-3.13) and sdist. readpst.exe is attached by the Windows build job." \
+            || echo "release create raced or exists; continuing to upload"
+          fi
+          gh release upload "$tag" dist/*.whl dist/*.tar.gz --clobber

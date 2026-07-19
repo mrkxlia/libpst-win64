@@ -1,14 +1,21 @@
-Starting with an unpacked tarball, try this:
+libpst-win64
+============
 
-    ./configure
+Full documentation is in README.md (rendered on the project's GitHub page):
+a Windows readpst.exe build, the libpst_py Python library, and the
+fuzz-hardening/CI work this fork adds on top of pst-format/libpst.
+
+Building the tools from source (autotools, as upstream):
+
+    ./configure --enable-python=no --enable-dii=no
     make
-    su
     make install
 
+Building the Python library (libpst_py):
 
-Starting with a Git working directory, try this:
+    pip install .
 
-    make -f *cvs
-    make -C xml all distclean
-    make distcheck
+See README.md for prerequisites, installation from prebuilt wheels, usage,
+and the security/fuzzing setup.
 
+License: GPL-2.0-or-later (see COPYING).

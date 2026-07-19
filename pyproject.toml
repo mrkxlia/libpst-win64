@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 name = "libpst-py"
 version = "0.1.0"
 description = "Read Microsoft Outlook .pst files from Python (pybind11 binding over the libpst C core)"
-readme = "README.win64.md"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "GPL-2.0-or-later" }
 authors = [{ name = "libpst-win64 contributors" }]
