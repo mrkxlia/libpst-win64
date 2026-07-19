@@ -25,11 +25,11 @@ import libpst_py
 
 
 def test_api_surface():
-    assert hasattr(libpst_py, "open")
-    assert hasattr(libpst_py, "PstFile")
-    assert hasattr(libpst_py, "Folder")
-    assert hasattr(libpst_py, "Message")
-    assert hasattr(libpst_py, "Attachment")
+    for name in (
+        "open", "PstFile", "Folder", "Message", "Attachment",
+        "Contact", "Appointment", "Journal",
+    ):
+        assert hasattr(libpst_py, name), name
     assert isinstance(libpst_py.__version__, str)
 
 
@@ -126,3 +126,44 @@ def test_full_walk_with_real_pst():
     # dist-list.pst has a full standard folder tree; a real walk must see it.
     assert folders > 1, f"expected a multi-folder tree, walked {folders}"
     assert total >= 0
+
+
+@pytest.mark.skipif(
+    _default_pst() is None,
+    reason="no valid .pst fixture available",
+)
+def test_expanded_items_from_real_pst():
+    """The valid fixture carries one contact, one appointment and one message;
+    verify the expanded Contact/Appointment/Message fields decode from real
+    data (not just that the attributes exist)."""
+    pst = libpst_py.open(_default_pst())
+
+    contacts, appointments, messages = [], [], []
+
+    def walk(folder):
+        contacts.extend(folder.contacts)
+        appointments.extend(folder.appointments)
+        messages.extend(folder.messages)
+        for sub in folder.subfolders:
+            walk(sub)
+
+    walk(pst.root)
+
+    assert any(c.email1 == "contact1@rjohnson.id.au" for c in contacts), (
+        f"expected the sample contact, got {[c.email1 for c in contacts]}"
+    )
+    # The sample appointment has a parseable ISO-8601 start timestamp.
+    assert any(a.start and a.start[:4].isdigit() for a in appointments), (
+        f"expected an appointment with a start date, got {[a.start for a in appointments]}"
+    )
+    # Every attachment's .data is bytes and matches its reported size.
+    for m in messages:
+        for att in m.attachments:
+            assert isinstance(att.data, (bytes, bytearray))
+
+
+def test_type_stubs_are_shipped():
+    import libpst_py as _pkg
+    pkg_dir = pathlib.Path(_pkg.__file__).resolve().parent
+    assert (pkg_dir / "_core.pyi").is_file(), "missing _core.pyi type stub"
+    assert (pkg_dir / "py.typed").is_file(), "missing py.typed marker"

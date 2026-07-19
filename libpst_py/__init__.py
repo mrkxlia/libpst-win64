@@ -2,8 +2,9 @@
 
 A thin, self-contained binding over the libpst C core (compiled into the
 extension module ``libpst_py._core``). The high-level API lets you open a
-.pst file and walk its folder tree, reading each message's subject, sender,
-date, plain-text body and attachment file names.
+.pst file and walk its folder tree, reading messages (subject, sender,
+recipients, headers, plain/HTML/RTF bodies, attachment bytes), contacts,
+appointments and journal entries.
 
 Example
 -------
@@ -19,8 +20,11 @@ Example
 """
 
 from ._core import (  # noqa: F401
+    Appointment,
     Attachment,
+    Contact,
     Folder,
+    Journal,
     Message,
     PstFile,
     __version__,
@@ -28,8 +32,11 @@ from ._core import (  # noqa: F401
 )
 
 __all__ = [
+    "Appointment",
     "Attachment",
+    "Contact",
     "Folder",
+    "Journal",
     "Message",
     "PstFile",
     "open",
