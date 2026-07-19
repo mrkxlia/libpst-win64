@@ -785,10 +785,16 @@ void mk_kmail_dir(char *fname) {
     free (dir);
 
     //we should remove any existing indexes created by KMail, cause they might be different now
-    index = pst_malloc(strlen(fname)+strlen(KMAIL_INDEX)+1);
-    sprintf(index, KMAIL_INDEX, fname);
+    // Sanitize the folder name (untrusted) before it goes into the unlink path;
+    // KMAIL_INDEX intentionally starts with "../", so only the name part is
+    // cleaned (a raw name with separators/".." would otherwise traverse).
+    char *safe_fname = strdup(fname);
+    check_filename(safe_fname);
+    index = pst_malloc(strlen(safe_fname)+strlen(KMAIL_INDEX)+1);
+    sprintf(index, KMAIL_INDEX, safe_fname);
     unlink(index);
     free(index);
+    free(safe_fname);
 
     DEBUG_RET();
 }
@@ -1024,6 +1030,13 @@ void check_filename(char *fname) {
         // while there are characters in the second string that we don't want
         *t = '_'; //replace them with an underscore
     }
+    // After removing path separators, a folder/attachment name that is exactly
+    // "." or ".." would still be usable as a directory-traversal target when
+    // passed to mkdir()/chdir(). Neutralize those whole-component names so a
+    // crafted .pst cannot escape the chosen output directory.
+    if (strcmp(fname, ".") == 0 || strcmp(fname, "..") == 0) {
+        for (t = fname; *t; t++) *t = '_';
+    }
     DEBUG_RET();
 }
 
@@ -1088,15 +1101,22 @@ void write_separate_attachment(char f_name[], pst_item_attach* attach, int attac
         temp = pst_malloc(strlen(f_name)+15);
         sprintf(temp, "%s-attach%i", f_name, attach_num);
     } else {
+        // Sanitize the attachment name before building the output path: the
+        // name comes from the untrusted .pst and may contain path separators
+        // or "..", which would otherwise let a crafted file escape the output
+        // directory. Work on a copy so the item's own strings are unchanged.
+        char *safe_attach = strdup(attach_filename);
+        check_filename(safe_attach);
         // have an attachment name, make sure it's unique
-        temp = pst_malloc(strlen(f_name)+strlen(attach_filename)+15);
+        temp = pst_malloc(strlen(f_name)+strlen(safe_attach)+15);
         do {
             if (fp) fclose(fp);
             if (x == 0)
-                sprintf(temp, "%s-%s", f_name, attach_filename);
+                sprintf(temp, "%s-%s", f_name, safe_attach);
             else
-                sprintf(temp, "%s-%s-%i", f_name, attach_filename, x);
+                sprintf(temp, "%s-%s-%i", f_name, safe_attach, x);
         } while ((fp = fopen(temp, "r")) && ++x < 99999999);
+        free(safe_attach);
         if (x > 99999999) {
             DIE(("error finding attachment name. exhausted possibilities to %s\n", temp));
         }
@@ -1172,10 +1192,18 @@ char *quote_string(char *inp) {
     char *curr_in = inp;
     char *curr_out = res;
     while (*curr_in) {
-        if (*curr_in == '\"' || *curr_in == '\\') {
+        unsigned char c = (unsigned char)*curr_in;
+        if (c == '\"' || c == '\\') {
             *curr_out++ = '\\';
+            *curr_out++ = (char)c;
+        } else if (c < 0x20 || c == 0x7f) {
+            // Replace control characters (notably CR/LF) so an attacker-chosen
+            // attachment name cannot inject or split MIME headers.
+            *curr_out++ = '_';
+        } else {
+            *curr_out++ = (char)c;
         }
-        *curr_out++ = *curr_in++;
+        curr_in++;
     }
     *curr_out = '\0';
     return res;
@@ -1291,8 +1319,11 @@ void write_inline_attachment(FILE* f_output, pst_item_attach* attach, char *boun
         free(escaped);
     }
     else if (attach->filename1.str) {
-        // short filename never needs encoding
-        fprintf(f_output, "Content-Disposition: attachment; filename=\"%s\"\n\n", attach->filename1.str);
+        // short filename: still escape/neutralize so a crafted name cannot
+        // inject MIME headers (quote_string strips CR/LF and control chars).
+        char *escaped = quote_string(attach->filename1.str);
+        fprintf(f_output, "Content-Disposition: attachment; filename=\"%s\"\n\n", escaped);
+        free(escaped);
     }
     else {
         // no filename is inline

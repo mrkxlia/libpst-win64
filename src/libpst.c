@@ -272,7 +272,7 @@ static int              pst_build_desc_ptr(pst_file *pf, int64_t offset, int32_t
 static pst_id2_tree*    pst_build_id2(pst_file *pf, pst_index_ll* list, int32_t depth);
 static int              pst_build_id_ptr(pst_file *pf, int64_t offset, int32_t depth, uint64_t linku1, uint64_t start_val, uint64_t end_val);
 static int              pst_chr_count(char *str, char x);
-static size_t           pst_ff_compile_ID(pst_file *pf, uint64_t i_id, pst_holder *h, size_t size);
+static size_t           pst_ff_compile_ID(pst_file *pf, uint64_t i_id, pst_holder *h, size_t size, int32_t depth);
 static size_t           pst_ff_getIDblock(pst_file *pf, uint64_t i_id, char** buf);
 static size_t           pst_ff_getID2block(pst_file *pf, uint64_t id2, pst_id2_tree *id2_head, char** buf);
 static size_t           pst_ff_getID2data(pst_file *pf, pst_index_ll *ptr, pst_holder *h);
@@ -413,7 +413,14 @@ err:
 
 int pst_close(pst_file *pf) {
     DEBUG_ENT("pst_close");
-    pst_unicode_close();
+    // NOTE: the iconv converters in vbuf.c are process-global singletons shared
+    // by every pst_file. Tearing them down here would break any other pst_file
+    // that is still open (closing file A must not disable conversion for file
+    // B) — a real bug once more than one file is opened, e.g. from the Python
+    // binding. They are (re)initialized on demand by pst_open()/pst_unicode_init
+    // and are bounded singletons, so we intentionally do NOT close them here;
+    // the OS reclaims them at process exit. (They are not thread-safe; callers
+    // must not parse in parallel across threads.)
     if (!pf) {
         DEBUG_RET();
         return 0;
@@ -1606,23 +1613,50 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
     if (block_hdr.index_offset == (uint16_t)0x0101) { //type 3
         size_t i;
         char *b_ptr = buf + 8;
+        // block_hdr.type (the sub-block count) and the per-entry ids all come
+        // from the untrusted block. Bound the walk against the block buffer,
+        // and require at least one sub-block for the header read that follows.
+        const char *b_end = buf + read_size;
+        const size_t t3_rec = (pf->do_read64) ? sizeof(pst_table3_rec)
+                                              : sizeof(pst_table3_rec32);
         subblocks.subblock_count = block_hdr.type;
+        if (subblocks.subblock_count == 0) {
+            DEBUG_WARN(("type 3 block with zero sub-blocks in id %#" PRIx64 "\n", block_id));
+            if (buf) free(buf);
+            DEBUG_RET();
+            return NULL;
+        }
         subblocks.subs = malloc(sizeof(pst_subblock) * subblocks.subblock_count);
         for (i=0; i<subblocks.subblock_count; i++) {
-            b_ptr += pst_decode_type3(pf, &table3_rec, b_ptr);
             subblocks.subs[i].buf       = NULL;
+            subblocks.subs[i].read_size = 0;
+            subblocks.subs[i].i_offset  = 0;
+            // Do not read a type-3 record past the end of the block buffer.
+            if (b_ptr < buf || (size_t)(b_end - b_ptr) < t3_rec) {
+                DEBUG_WARN(("type 3 sub-block table runs past end of block id %#" PRIx64 "\n", block_id));
+                break;
+            }
+            b_ptr += pst_decode_type3(pf, &table3_rec, b_ptr);
             subblocks.subs[i].read_size = pst_ff_getIDblock_dec(pf, table3_rec.id, &subblocks.subs[i].buf);
-            if (subblocks.subs[i].buf) {
+            if (subblocks.subs[i].buf && subblocks.subs[i].read_size >= sizeof(block_hdr)) {
                 memcpy(&block_hdr, subblocks.subs[i].buf, sizeof(block_hdr));
                 LE16_CPU(block_hdr.index_offset);
                 subblocks.subs[i].i_offset = block_hdr.index_offset;
             }
             else {
+                if (subblocks.subs[i].buf) { free(subblocks.subs[i].buf); subblocks.subs[i].buf = NULL; }
                 subblocks.subs[i].read_size = 0;
                 subblocks.subs[i].i_offset  = 0;
             }
         }
         free(buf);
+        // The header re-read below requires a valid first sub-block.
+        if (!subblocks.subs[0].buf || subblocks.subs[0].read_size < sizeof(block_hdr)) {
+            DEBUG_WARN(("type 3 first sub-block missing/too small in id %#" PRIx64 "\n", block_id));
+            freeall(&subblocks, &block_offset1, &block_offset2, &block_offset3, &block_offset4, &block_offset5, &block_offset6, &block_offset7);
+            DEBUG_RET();
+            return NULL;
+        }
         memcpy(&block_hdr, subblocks.subs[0].buf, sizeof(block_hdr));
         LE16_CPU(block_hdr.index_offset);
         LE16_CPU(block_hdr.type);
@@ -1643,6 +1677,15 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
 
         if (pst_getBlockOffsetPointer(pf, i2_head, &subblocks, block_hdr.offset, &block_offset1)) {
             DEBUG_WARN(("internal error (bc.b5 offset %#" PRIx32 ") in reading block id %#" PRIx64 "\n", block_hdr.offset, block_id));
+            freeall(&subblocks, &block_offset1, &block_offset2, &block_offset3, &block_offset4, &block_offset5, &block_offset6, &block_offset7);
+            DEBUG_RET();
+            return NULL;
+        }
+        // pst_getBlockOffsetPointer only guarantees from<=to<=read_size, not
+        // that the region is large enough for the struct read below.
+        if (!block_offset1.from ||
+            (size_t)(block_offset1.to - block_offset1.from) < sizeof(table_rec)) {
+            DEBUG_WARN(("bc.b5 region too small for table_rec in block id %#" PRIx64 "\n", block_id));
             freeall(&subblocks, &block_offset1, &block_offset2, &block_offset3, &block_offset4, &block_offset5, &block_offset6, &block_offset7);
             DEBUG_RET();
             return NULL;
@@ -1681,6 +1724,13 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
             return NULL;
         }
         fr_ptr = block_offset3.from; //now got pointer to "7C block"
+        if (!block_offset3.from ||
+            (size_t)(block_offset3.to - block_offset3.from) < sizeof(seven_c_blk)) {
+            DEBUG_WARN(("7c.7c region too small for seven_c_blk in block id %#" PRIx64 "\n", block_id));
+            freeall(&subblocks, &block_offset1, &block_offset2, &block_offset3, &block_offset4, &block_offset5, &block_offset6, &block_offset7);
+            DEBUG_RET();
+            return NULL;
+        }
         memset(&seven_c_blk, 0, sizeof(seven_c_blk));
         memcpy(&seven_c_blk, fr_ptr, sizeof(seven_c_blk));
         LE16_CPU(seven_c_blk.u1);
@@ -1706,6 +1756,13 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
 
         if (pst_getBlockOffsetPointer(pf, i2_head, &subblocks, seven_c_blk.b_five_offset, &block_offset4)) {
             DEBUG_WARN(("internal error (7c.b5 offset %#" PRIx32 ") in reading block id %#" PRIx64 "\n", seven_c_blk.b_five_offset, block_id));
+            freeall(&subblocks, &block_offset1, &block_offset2, &block_offset3, &block_offset4, &block_offset5, &block_offset6, &block_offset7);
+            DEBUG_RET();
+            return NULL;
+        }
+        if (!block_offset4.from ||
+            (size_t)(block_offset4.to - block_offset4.from) < sizeof(table_rec)) {
+            DEBUG_WARN(("7c.b5 region too small for table_rec in block id %#" PRIx64 "\n", block_id));
             freeall(&subblocks, &block_offset1, &block_offset2, &block_offset3, &block_offset4, &block_offset5, &block_offset6, &block_offset7);
             DEBUG_RET();
             return NULL;
@@ -2027,7 +2084,9 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
         DEBUG_WARN(("src not 0x0b for boolean dst\n"));                     \
         DEBUG_HEXDUMP(list->elements[x]->data, list->elements[x]->size);    \
     }                                                                       \
-    if (*(int16_t*)list->elements[x]->data) {                               \
+    if (list->elements[x]->data &&                                          \
+        list->elements[x]->size >= sizeof(int16_t) &&                       \
+        *(int16_t*)list->elements[x]->data) {                               \
         DEBUG_INFO((label" - True\n"));                                     \
         targ = 1;                                                           \
     } else {                                                                \
@@ -2056,8 +2115,14 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
         DEBUG_WARN(("src not 0x02 for int16 dst\n"));                       \
         DEBUG_HEXDUMP(list->elements[x]->data, list->elements[x]->size);    \
     }                                                                       \
-    memcpy(&(targ), list->elements[x]->data, sizeof(targ));                 \
-    LE16_CPU(targ);                                                         \
+    if (list->elements[x]->data && list->elements[x]->size >= sizeof(targ)) {\
+        memcpy(&(targ), list->elements[x]->data, sizeof(targ));             \
+        LE16_CPU(targ);                                                     \
+    } else {                                                                \
+        DEBUG_WARN(("int16 element too small (%zu bytes); using 0\n",       \
+                    (size_t)list->elements[x]->size));                      \
+        targ = 0;                                                           \
+    }                                                                       \
 }
 
 #define LIST_COPY_INT16(label, targ) {                          \
@@ -2070,8 +2135,14 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
         DEBUG_WARN(("src not 0x03 for int32 dst\n"));                       \
         DEBUG_HEXDUMP(list->elements[x]->data, list->elements[x]->size);    \
     }                                                                       \
-    memcpy(&(targ), list->elements[x]->data, sizeof(targ));                 \
-    LE32_CPU(targ);                                                         \
+    if (list->elements[x]->data && list->elements[x]->size >= sizeof(targ)) {\
+        memcpy(&(targ), list->elements[x]->data, sizeof(targ));             \
+        LE32_CPU(targ);                                                     \
+    } else {                                                                \
+        DEBUG_WARN(("int32 element too small (%zu bytes); using 0\n",       \
+                    (size_t)list->elements[x]->size));                      \
+        targ = 0;                                                           \
+    }                                                                       \
 }
 
 #define LIST_COPY_INT32(label, targ) {                          \
@@ -2136,6 +2207,16 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
 
 #define LIST_COPY_ENTRYID(label, targ) {                        \
     LIST_COPY(targ, (pst_entryid*));                            \
+    /* LIST_COPY only allocated element->size+1 bytes, but the reads below   \
+     * touch the full pst_entryid (u1 and id). Pad short elements up to the   \
+     * struct size and zero the gap so those reads stay in bounds. */         \
+    if (list->elements[x]->size < sizeof(pst_entryid)) {        \
+        DEBUG_WARN(("entryid element too small (%zu bytes); padding\n",       \
+                    (size_t)list->elements[x]->size));          \
+        targ = (pst_entryid*) pst_realloc(targ, sizeof(pst_entryid)); \
+        memset(((char*)targ) + list->elements[x]->size, 0,      \
+               sizeof(pst_entryid) - list->elements[x]->size);  \
+    }                                                           \
     LE32_CPU(targ->u1);                                         \
     LE32_CPU(targ->id);                                         \
     DEBUG_INFO((label" u1=%#" PRIx32 ", id=%#" PRIx32 "\n", targ->u1, targ->id)); \
@@ -3435,7 +3516,7 @@ static pst_id2_tree * pst_build_id2(pst_file *pf, pst_index_ll* list, int32_t de
     }
 
     buf_size = pst_read_block_size(pf, list->offset, list->size, list->inflated_size, &buf);
-    if (buf_size < list->size) {
+    if (buf_size == (size_t)-1 || buf_size < list->size) {
         //an error occurred in block read
         DEBUG_WARN(("block read error occurred. offset = %#" PRIx64 ", size = %#" PRIx64 "\n", list->offset, list->size));
         if (buf) free(buf);
@@ -3989,6 +4070,9 @@ static size_t pst_read_block_size(pst_file *pf, int64_t offset, size_t size, siz
     if (uncompress((Bytef *) *buf, &result_size, (Bytef *) zbuf, size) != Z_OK || ((size_t) result_size) != inflated_size) {
         DEBUG_WARN(("Failed to uncompress %zu bytes to %zu bytes, got %zu\n", size, inflated_size, (size_t) result_size));
         if (zbuf) free(zbuf);
+        // Free the (successfully allocated but never filled) output buffer so
+        // the caller does not receive a live pointer alongside a -1 length.
+        if (*buf) { free(*buf); *buf = NULL; }
         DEBUG_RET();
         return -1;
     }
@@ -4145,7 +4229,9 @@ size_t pst_ff_getIDblock_dec(pst_file *pf, uint64_t i_id, char **buf) {
     DEBUG_ENT("pst_ff_getIDblock_dec");
     DEBUG_INFO(("for id %#" PRIx64 "\n", i_id));
     r = pst_ff_getIDblock(pf, i_id, buf);
-    if ((pf->encryption) && !(noenc)) {
+    // Guard against a failed/oversized read: r==0 (nothing read) or a NULL
+    // buffer must never reach pst_decrypt, which writes buf[0..r).
+    if ((pf->encryption) && !(noenc) && r && *buf && r != (size_t)-1) {
         (void)pst_decrypt(i_id, *buf, r, pf->encryption);
     }
     DEBUG_HEXDUMPC(*buf, r, 16);
@@ -4174,6 +4260,13 @@ static size_t pst_ff_getIDblock(pst_file *pf, uint64_t i_id, char** buf) {
     }
     DEBUG_INFO(("id = %#" PRIx64 ", record size = %#" PRIx64 ", offset = %#" PRIx64 "\n", i_id, rec->size, rec->offset));
     rsize = pst_read_block_size(pf, rec->offset, rec->size, rec->inflated_size, buf);
+    // pst_read_block_size returns (size_t)-1 on failure. Never propagate that
+    // as a valid length: a SIZE_MAX length flows into pst_decrypt (a giant
+    // heap out-of-bounds write) and defeats every bounds check downstream.
+    if (rsize == (size_t)-1) {
+        if (*buf) { free(*buf); *buf = NULL; }
+        rsize = 0;
+    }
     DEBUG_RET();
     return rsize;
 }
@@ -4216,7 +4309,7 @@ static size_t pst_ff_getID2data(pst_file *pf, pst_index_ll *ptr, pst_holder *h) 
     } else {
         // here we will assume it is an indirection block that points to others
         DEBUG_INFO(("Assuming it is a multi-block record because of it's id %#" PRIx64 "\n", ptr->i_id));
-        ret = pst_ff_compile_ID(pf, ptr->i_id, h, (size_t)0);
+        ret = pst_ff_compile_ID(pf, ptr->i_id, h, (size_t)0, 0);
     }
     ret = pst_finish_cleanup_holder(h, ret);
     DEBUG_RET();
@@ -4233,21 +4326,37 @@ static size_t pst_ff_getID2data(pst_file *pf, pst_index_ll *ptr, pst_holder *h) 
  *  @param size   number of bytes of data already sent to h
  *  @return       updated size of the output
  */
-static size_t pst_ff_compile_ID(pst_file *pf, uint64_t i_id, pst_holder *h, size_t size) {
+static size_t pst_ff_compile_ID(pst_file *pf, uint64_t i_id, pst_holder *h, size_t size, int32_t depth) {
     size_t    z, a;
     uint16_t  count, y;
     char      *buf3 = NULL;
     char      *buf2 = NULL;
     char      *b_ptr;
+    const char *b_end;
+    size_t     t3_rec;
     pst_block_hdr  block_hdr;
     pst_table3_rec table3_rec;  //for type 3 (0x0101) blocks
 
     DEBUG_ENT("pst_ff_compile_ID");
+    // The 0x0201 branch recurses with attacker-controlled ids; bound the depth
+    // so a cyclic/deep indirection chain cannot exhaust the stack.
+    if (depth < 0 || depth > PST_MAX_BTREE_DEPTH) {
+        DEBUG_WARN(("indirect id block too deep (depth %" PRIi32 "); possible cycle\n", depth));
+        DEBUG_RET();
+        return size;
+    }
     a = pst_ff_getIDblock(pf, i_id, &buf3);
     if (!a) {
         if (buf3) free(buf3);
         DEBUG_RET();
         return 0;
+    }
+    // Must have at least the fixed header before reading it.
+    if (a < sizeof(block_hdr)) {
+        DEBUG_WARN(("id block %#" PRIx64 " too small for header [%zu bytes]\n", i_id, a));
+        if (buf3) free(buf3);
+        DEBUG_RET();
+        return size;
     }
     DEBUG_HEXDUMPC(buf3, a, 16);
     memcpy(&block_hdr, buf3, sizeof(block_hdr));
@@ -4258,14 +4367,17 @@ static size_t pst_ff_compile_ID(pst_file *pf, uint64_t i_id, pst_holder *h, size
 
     count = block_hdr.type;
     b_ptr = buf3 + 8;
+    b_end = buf3 + a;
+    t3_rec = (pf->do_read64) ? sizeof(pst_table3_rec) : sizeof(pst_table3_rec32);
 
     // For indirect lookups through a table of i_ids, just recurse back into this
     // function, letting it concatenate all the data together, and then return the
     // total size of the data.
     if (block_hdr.index_offset == (uint16_t)0x0201) { // Indirect lookup (depth 2).
         for (y=0; y<count; y++) {
+            if (b_ptr < buf3 || (size_t)(b_end - b_ptr) < t3_rec) break;
             b_ptr += pst_decode_type3(pf, &table3_rec, b_ptr);
-            size = pst_ff_compile_ID(pf, table3_rec.id, h, size);
+            size = pst_ff_compile_ID(pf, table3_rec.id, h, size, depth + 1);
         }
         free(buf3);
         DEBUG_RET();
@@ -4282,6 +4394,7 @@ static size_t pst_ff_compile_ID(pst_file *pf, uint64_t i_id, pst_holder *h, size
     }
 
     for (y=0; y<count; y++) {
+        if (b_ptr < buf3 || (size_t)(b_end - b_ptr) < t3_rec) break;
         b_ptr += pst_decode_type3(pf, &table3_rec, b_ptr);
         z = pst_ff_getIDblock_dec(pf, table3_rec.id, &buf2);
         if (!z) {

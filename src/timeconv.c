@@ -4,20 +4,37 @@
 
 char* pst_fileTimeToAscii(const FILETIME* filetime, char* result) {
     time_t t;
+    char *r;
     t = pst_fileTimeToUnixTime(filetime);
-    return ctime_r(&t, result);
+    // ctime_r returns NULL for out-of-range times (a crafted FILETIME can force
+    // this); hand back an empty string rather than a NULL the callers deref.
+    r = ctime_r(&t, result);
+    if (!r && result) { result[0] = '\0'; r = result; }
+    return r;
 }
 
 size_t pst_fileTimeToString(const FILETIME* filetime, const char* date_format, char* result) {
     time_t t;
+    struct tm *tm;
     t = pst_fileTimeToUnixTime(filetime);
-    return strftime(result, MAXDATEFMTLEN-1, date_format, localtime(&t));
+    // localtime() can return NULL for out-of-range times; passing that to
+    // strftime is undefined. Emit an empty result instead.
+    tm = localtime(&t);
+    if (!tm) {
+        if (result) result[0] = '\0';
+        return 0;
+    }
+    return strftime(result, MAXDATEFMTLEN-1, date_format, tm);
 }
 
 void pst_fileTimeToStructTM (const FILETIME *filetime, struct tm *result) {
     time_t t1;
     t1 = pst_fileTimeToUnixTime(filetime);
-    gmtime_r(&t1, result);
+    // gmtime_r can fail (NULL) for out-of-range times; leave a zeroed struct
+    // rather than an uninitialized one.
+    if (!gmtime_r(&t1, result)) {
+        memset(result, 0, sizeof(*result));
+    }
 }
 
 
