@@ -1,9 +1,14 @@
 name: Security checks (fuzzing, ASAN/UBSAN, static analysis)
 
-# フェーズ2A: 信頼できない .pst を解析する C パーサーのメモリ安全性検証。
-# - fuzz: libFuzzer (clang) でコアパース経路と RTF 展開を短時間 fuzz
-# - asan-ubsan: 修正済みバグの再現コーパスを ASAN+UBSAN で再生 (回帰防止)
-# - static-analysis: cppcheck / clang-tidy の指摘を重大度付きで一覧化
+# 信頼できない .pst を解析する C パーサーのメモリ安全性検証。
+# - fuzz: libFuzzer (clang) でコアパース経路と RTF 展開を探索的に短時間 fuzz。
+#   **これは探索的ジョブでありゲートではない** — 20年もののパーサーは fuzz の度に
+#   新規の潜在バグを見つけうるため、新規クラッシュはアーティファクト+サマリで
+#   報告するがジョブは失敗させない。回帰の確定ゲートは asan-ubsan (下記)。
+#   継続的な深掘り fuzz は cflite_batch.yml (ClusterFuzzLite) が担う。
+# - asan-ubsan: 修正済みバグの再現コーパス+有効フィクスチャを ASAN+UBSAN で再生し、
+#   既知バグの回帰を確定的に検出する (**ハードゲート**)。LE マクロ単体テストも実行。
+# - static-analysis / coverage / strict-warnings: 参考情報 (非ゲート)。
 
 on:
   push:
@@ -79,7 +84,10 @@ jobs:
           cp regression/fuzz-corpus/* fuzz_run_lzfu/ 2>/dev/null || true
           cp tests/fixtures/dist-list.pst fuzz_run_lzfu/ 2>/dev/null || true
           ./fuzz_lzfu -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
-            -dict=fuzz/pst.dict -artifact_prefix=lzfu- fuzz_run_lzfu
+            -dict=fuzz/pst.dict -artifact_prefix=lzfu- fuzz_run_lzfu || {
+            echo "::warning::fuzz_lzfu found a crash (uploaded as fuzz-crashes); exploratory, not gating"
+            echo "- \`fuzz_lzfu\`: **new crash found** — see the fuzz-crashes artifact" >> "$GITHUB_STEP_SUMMARY"
+          }
 
       - name: fuzz core parse path (~5 min)
         env:
@@ -90,7 +98,10 @@ jobs:
           cp fuzz/corpus/* regression/fuzz-corpus/* fuzz_run_pst/ 2>/dev/null || true
           cp tests/fixtures/dist-list.pst fuzz_run_pst/ 2>/dev/null || true
           ./fuzz_pst_open -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
-            -dict=fuzz/pst.dict -artifact_prefix=pst- fuzz_run_pst
+            -dict=fuzz/pst.dict -artifact_prefix=pst- fuzz_run_pst || {
+            echo "::warning::fuzz_pst_open found a crash (uploaded as fuzz-crashes); exploratory, not gating"
+            echo "- \`fuzz_pst_open\`: **new crash found** — see the fuzz-crashes artifact" >> "$GITHUB_STEP_SUMMARY"
+          }
 
       - name: fuzz folder-walk path (~5 min)
         env:
@@ -101,10 +112,15 @@ jobs:
           cp fuzz/corpus/* regression/fuzz-corpus/* fuzz_run_walk/ 2>/dev/null || true
           cp tests/fixtures/dist-list.pst fuzz_run_walk/ 2>/dev/null || true
           ./fuzz_pst_walk -max_total_time=300 -rss_limit_mb=2560 -malloc_limit_mb=2048 \
-            -dict=fuzz/pst.dict -artifact_prefix=walk- fuzz_run_walk
+            -dict=fuzz/pst.dict -artifact_prefix=walk- fuzz_run_walk || {
+            echo "::warning::fuzz_pst_walk found a crash (uploaded as fuzz-crashes); exploratory, not gating"
+            echo "- \`fuzz_pst_walk\`: **new crash found** — see the fuzz-crashes artifact" >> "$GITHUB_STEP_SUMMARY"
+          }
 
       - name: upload crash artifacts
-        if: failure()
+        # The fuzz steps above are non-gating (they swallow their exit code),
+        # so upload on always() to capture any crash they surfaced.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crashes

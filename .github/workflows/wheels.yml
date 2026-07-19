@@ -81,22 +81,26 @@ jobs:
         shell: bash
         run: |
           # Use whichever interpreter the runner provides (macOS images expose
-          # python3, not python).
+          # python3, not python) in an isolated venv so PEP 668
+          # (externally-managed-environment on the Homebrew Python) can't block
+          # the pip installs.
           PY=$(command -v python3 || command -v python)
-          "$PY" -m pip install --upgrade pip
+          "$PY" -m venv /tmp/verifyenv
+          VPY=/tmp/verifyenv/bin/python
+          [ -x "$VPY" ] || VPY=/tmp/verifyenv/Scripts/python
           ls -l wheelhouse
           for w in wheelhouse/*.whl; do
             echo "::group::$w"
-            "$PY" -m zipfile -l "$w"
+            "$VPY" -m zipfile -l "$w"
             echo "::endgroup::"
           done
           # Confirm each wheel carries no unexpected external deps.
           if [ "${{ runner.os }}" = "Linux" ]; then
-            "$PY" -m pip install auditwheel
-            for w in wheelhouse/*.whl; do "$PY" -m auditwheel show "$w" || true; done
+            "$VPY" -m pip install auditwheel
+            for w in wheelhouse/*.whl; do "$VPY" -m auditwheel show "$w" || true; done
           elif [ "${{ runner.os }}" = "macOS" ]; then
-            "$PY" -m pip install delocate
-            for w in wheelhouse/*.whl; do "$PY" -m delocate.cmd.delocate_listdeps "$w" || true; done
+            "$VPY" -m pip install delocate
+            for w in wheelhouse/*.whl; do "$VPY" -m delocate.cmd.delocate_listdeps "$w" || true; done
           fi
 
       - uses: actions/upload-artifact@v4
