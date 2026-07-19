@@ -315,7 +315,9 @@ fi
 #
 AC_MSG_CHECKING([whether to build the libpst python interface])
 AC_ARG_ENABLE([python],
-    AC_HELP_STRING([--enable-python], [build libpst python interface]),
+    AC_HELP_STRING([--enable-python],
+        [build the legacy Boost.Python interface (default: no; the maintained
+         binding is the pybind11-based libpst_py wheel built via CMake)]),
     [
         case "${enableval}" in
           yes) ;;
@@ -324,7 +326,7 @@ AC_ARG_ENABLE([python],
         esac
     ],
     [
-        enable_python=yes
+        enable_python=no
     ])
 AC_MSG_RESULT([$enable_python])
 AM_CONDITIONAL(PYTHON_INTERFACE, [test "$enable_python" = "yes"])

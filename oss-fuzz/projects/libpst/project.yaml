@@ -1,0 +1,13 @@
+homepage: "https://github.com/pst-format/libpst"
+language: c
+primary_contact: "duansurkgundam@gmail.com"
+main_repo: "https://github.com/mrkxlia/libpst-win64"
+fuzzing_engines:
+  - libfuzzer
+  - afl
+  - honggfuzz
+sanitizers:
+  - address
+  - undefined
+architectures:
+  - x86_64

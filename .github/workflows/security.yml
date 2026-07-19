@@ -302,3 +302,44 @@ jobs:
             cov_base.txt
             cov_full.txt
           if-no-files-found: ignore
+
+  strict-warnings:
+    # Visibility-only: compiles the core with stricter warning sets that are
+    # NOT yet part of the -Werror gate (there are many pre-existing hits), so
+    # the trend can be watched and burned down over time. Never fails the job.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc clang autoconf automake libtool \
+            autoconf-archive gettext autopoint pkg-config zlib1g-dev libgsf-1-dev
+
+      - name: generate config.h
+        run: |
+          autoreconf -fiv
+          ./configure --enable-python=no --enable-dii=no
+
+      - name: strict warning census (report only)
+        run: |
+          EXTRA="-Wconversion -Wsign-conversion -Wshadow -Wcast-qual -Wpointer-arith"
+          : > strict.txt
+          for f in $COMMON_SRCS; do
+            gcc -fsyntax-only -Wall -Wextra $EXTRA -DHAVE_CONFIG_H -I . -I src \
+              $(pkg-config --cflags glib-2.0) "$f" 2>> strict.txt || true
+          done
+          echo "## Strict-warning census (non-gating)" >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo "Total: $(grep -c 'warning:' strict.txt) warnings across the core sources" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -oE '\[-W[a-z-]+\]' strict.txt | sort | uniq -c | sort -rn | head -30 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: upload strict-warning log
+        uses: actions/upload-artifact@v4
+        with:
+          name: strict-warnings
+          path: strict.txt
+          if-no-files-found: ignore
