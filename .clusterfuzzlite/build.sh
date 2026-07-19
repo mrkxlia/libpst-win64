@@ -14,6 +14,14 @@ export CXXFLAGS="${CXXFLAGS:-} -fno-sanitize=alignment"
 autoreconf -fiv
 ./configure --enable-python=no --enable-dii=no
 
+# On the OSS-Fuzz base images iconv lives in libc; some minimal environments'
+# AM_ICONV link probe still fails to detect it, which would leave vbuf.c
+# without <iconv.h>. Force it on if configure left it undefined (glibc/musl
+# both provide iconv in libc, so no extra -liconv is needed).
+if ! grep -q '^#define HAVE_ICONV' config.h; then
+  sed -i 's|/\* #undef HAVE_ICONV \*/|#define HAVE_ICONV 1|' config.h
+fi
+
 CORE="src/debug.c src/libpst.c src/libstrfunc.c src/lzfu.c src/timeconv.c src/vbuf.c"
 
 # Full parse + folder-walk harnesses (need zlib for compressed blocks).
