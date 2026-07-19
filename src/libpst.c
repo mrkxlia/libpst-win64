@@ -1553,6 +1553,7 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
     int      block_type;
     uint32_t rec_size = 0;
     char*    list_start;
+    char*    list_end = NULL;   // end of the mapi element list (block-type dependent)
     char*    fr_ptr;
     char*    to_ptr;
     char*    ind2_end = NULL;
@@ -1737,6 +1738,7 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
         }
         list_start = block_offset2.from;
         to_ptr     = block_offset2.to;
+        list_end   = block_offset2.to;
         num_mapi_elements = (to_ptr - list_start)/sizeof(table_rec);
         num_mapi_objects  = 1; // only going to be one object in these blocks
     }
@@ -1769,6 +1771,10 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
         LE16_CPU(seven_c_blk.u8);
 
         list_start = fr_ptr + sizeof(seven_c_blk); // the list of item numbers start after this record
+        list_end   = block_offset3.to;              // ...and cannot run past the 7C region
+        // seven_c_blk.item_count is attacker-controlled and NOT derived from
+        // the region size (unlike the 0xBCEC path), so the per-element reads
+        // below must be bounded by list_end.
 
         if (seven_c_blk.seven_c != 0x7C) { // this would mean it isn't a 7C block!
             DEBUG_WARN(("Error. There isn't a 7C where I want to see 7C!\n"));
@@ -1860,6 +1866,15 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
         for (count_mapi_elements=0; count_mapi_elements<num_mapi_elements; count_mapi_elements++) { //we will increase fr_ptr as we progress through index
             char* value_pointer = NULL;     // needed for block type 2 with values larger than 4 bytes
             size_t value_size = 0;
+            // Each iteration reads one fixed-size record from fr_ptr; stop if
+            // the next record would run past the end of the list region (the
+            // element count can be attacker-controlled — see the 0x7CEC path).
+            size_t rec_bytes = (block_type == 1) ? sizeof(table_rec) : sizeof(table2_rec);
+            if (!list_end || fr_ptr < list_start ||
+                (size_t)(list_end - fr_ptr) < rec_bytes) {
+                DEBUG_WARN(("mapi element list runs past the end of the block\n"));
+                break;
+            }
             if (block_type == 1) {
                 memcpy(&table_rec, fr_ptr, sizeof(table_rec));
                 LE16_CPU(table_rec.type);
@@ -4603,7 +4618,10 @@ static char* pst_wide_to_single(char *wt, size_t size) {
     DEBUG_ENT("pst_wide_to_single");
     x = pst_malloc((size/2)+1);
     y = x;
-    while (size != 0 && *wt != '\0') {
+    // Consume two bytes (one UTF-16 code unit) per step. The guard must be
+    // `size >= 2`, not `size != 0`: an odd size would let `size -= 2` wrap past
+    // zero to SIZE_MAX and read far past the end of the buffer.
+    while (size >= 2 && *wt != '\0') {
         *y = *wt;
         wt+=2;
         size -= 2;
