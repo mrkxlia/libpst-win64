@@ -2030,13 +2030,19 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
             }
             x++;
         }
-        DEBUG_INFO(("increasing ind2_ptr by %" PRIi32 " [%#" PRIx32 "] bytes. Was %p, Now %p\n", rec_size, rec_size, (void*)ind2_ptr, (void*)(ind2_ptr+rec_size)));
-        ind2_ptr += rec_size;
-        // ind2 rows do not get split between blocks. See PST spec, 2.3.4.4 "Row Matrix".
-        if (ind2_ptr + rec_size > ind2_block_start + ind2_max_block_size) {
-            ind2_block_start += ind2_max_block_size;
-            DEBUG_INFO(("advancing ind2_ptr to next block. Was %p, Now %p\n", (void*)ind2_ptr, (void*)ind2_block_start));
-            ind2_ptr = ind2_block_start;
+        // ind2_ptr is only set for 0x7cec blocks; for 0xbcec blocks it stays
+        // NULL and this row-advance is unused. Guard it so we never do pointer
+        // arithmetic on a NULL base (undefined behavior, and NULL+0 trips UBSan
+        // even on well-formed PSTs).
+        if (ind2_ptr) {
+            DEBUG_INFO(("increasing ind2_ptr by %" PRIi32 " [%#" PRIx32 "] bytes. Was %p, Now %p\n", rec_size, rec_size, (void*)ind2_ptr, (void*)(ind2_ptr+rec_size)));
+            ind2_ptr += rec_size;
+            // ind2 rows do not get split between blocks. See PST spec, 2.3.4.4 "Row Matrix".
+            if (ind2_ptr + rec_size > ind2_block_start + ind2_max_block_size) {
+                ind2_block_start += ind2_max_block_size;
+                DEBUG_INFO(("advancing ind2_ptr to next block. Was %p, Now %p\n", (void*)ind2_ptr, (void*)ind2_block_start));
+                ind2_ptr = ind2_block_start;
+            }
         }
     }
     freeall(&subblocks, &block_offset1, &block_offset2, &block_offset3, &block_offset4, &block_offset5, &block_offset6, &block_offset7);
