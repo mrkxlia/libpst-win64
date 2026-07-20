@@ -4813,7 +4813,7 @@ void pst_rfc2231(pst_string *str) {
     }
     int n = strlen(str->str) + 2*needs + 15;
     char *buffer = pst_malloc(n);
-    strcpy(buffer, "utf-8''");
+    memcpy(buffer, "utf-8''", sizeof("utf-8''"));  // includes the NUL
     x = (int8_t *)str->str;
     const uint8_t *y = (uint8_t *)str->str;
     char *z = buffer;

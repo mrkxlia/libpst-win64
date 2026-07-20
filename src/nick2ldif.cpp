@@ -63,13 +63,13 @@ int main(int argc, char* const* argv) {
 			snprintf(cn, sizeof(cn), "%s", f);
 			char *ff = strchr(f, ' ');
 			if (ff) {
-				strncpy(givenName, ff+1, sizeof(givenName)-1);
+				snprintf(givenName, sizeof(givenName), "%s", ff+1);
 				*ff = '\0';
-				strncpy(sn, f, sizeof(sn)-1);
+				snprintf(sn, sizeof(sn), "%s", f);
 			}
 			else {
-				strcpy(givenName, cn);
-				strcpy(sn, cn);
+				snprintf(givenName, sizeof(givenName), "%s", cn);
+				snprintf(sn, sizeof(sn), "%s", cn);
 			}
 			printf("dn: cn=%s, %s\n", cn, ldap_base);
 			printf("cn: %s\n", cn);

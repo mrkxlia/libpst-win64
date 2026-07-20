@@ -235,7 +235,7 @@ static void print_pdf_short(const char *line, int len, int color)
     strex.charmap     = 0;
     strex.hdpi        = DPI;
     strex.vdpi        = DPI;
-    char xline[len+1];
+    char *xline = (char*)pst_malloc(len+1);
     memcpy(xline, line, len);
     xline[len] = '\0';
     char *p;
@@ -254,6 +254,7 @@ static void print_pdf_short(const char *line, int len, int color)
     if (err) printf("%s", err);
     x_position += (brect[2]-brect[6]);
     col_number += len;
+    free(xline);
 }
 
 
@@ -448,8 +449,8 @@ static string extract_header(char *headers, const char *field);
 static string extract_header(char *headers, const char *field)
 {
     string rc;
-    int len = strlen(field) + 4;
-    char f[len];
+    size_t len = strlen(field) + 4;
+    char *f = (char*)pst_malloc(len);
     snprintf(f, len, "\n%s: ", field);
     char *p = strstr(headers, f);
     if (p) {
@@ -464,6 +465,7 @@ static string extract_header(char *headers, const char *field)
             rc = string(p);
         }
     }
+    free(f);
     return rc;
 }
 
