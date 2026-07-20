@@ -1,0 +1,14 @@
+# Automated dependency updates. GitHub Actions are pinned to commit SHAs in
+# the workflows; Dependabot bumps the SHA and keeps the trailing "# vX.Y.Z"
+# comment in sync. The pip ecosystem watches the build requirements in
+# pyproject.toml.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"

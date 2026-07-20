@@ -13,8 +13,7 @@ name: Security checks (fuzzing, ASAN/UBSAN, static analysis)
 on:
   push:
     branches:
-      - win64-build
-      - claude/new-session-gpnx2m
+      - main
     paths:
       - "src/**"
       - "fuzz/**"
@@ -41,7 +40,7 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: install toolchain
         run: |
@@ -121,7 +120,7 @@ jobs:
         # The fuzz steps above are non-gating (they swallow their exit code),
         # so upload on always() to capture any crash they surfaced.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fuzz-crashes
           path: |
@@ -133,7 +132,7 @@ jobs:
   asan-ubsan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: install toolchain
         run: |
@@ -192,7 +191,7 @@ jobs:
   static-analysis:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: install tools
         run: |
@@ -237,7 +236,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: upload static-analysis reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: static-analysis
           path: |
@@ -251,7 +250,7 @@ jobs:
     # small adversarial seeds alone. Report only; never gates.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: install toolchain
         run: |
@@ -311,7 +310,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: upload coverage reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage
           path: |
@@ -325,7 +324,7 @@ jobs:
     # the trend can be watched and burned down over time. Never fails the job.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: install toolchain
         run: |
@@ -354,7 +353,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: upload strict-warning log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: strict-warnings
           path: strict.txt

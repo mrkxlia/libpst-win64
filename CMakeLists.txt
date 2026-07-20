@@ -43,7 +43,9 @@ if(WIN32)
   FetchContent_Declare(
     zlib
     GIT_REPOSITORY https://github.com/madler/zlib.git
-    GIT_TAG        v1.3.1
+    # Pinned to the commit behind the v1.3.1 tag so a moved/replaced tag
+    # cannot silently change what gets built into the wheel.
+    GIT_TAG        51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf # v1.3.1
   )
   FetchContent_MakeAvailable(zlib)
   # zlib's CMake exports a static target `zlibstatic` and a shared `zlib`.

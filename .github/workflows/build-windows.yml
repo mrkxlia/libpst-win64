@@ -29,10 +29,15 @@ on:
       - ".github/RELEASE_TAG"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
+    # Job-level write because the release step (create/upload the Release
+    # asset) lives in this job; everything else runs with the read-only
+    # workflow default.
+    permissions:
+      contents: write
     runs-on: windows-latest
     defaults:
       run:
@@ -49,9 +54,9 @@ jobs:
           git config --global core.autocrlf false
           git config --global core.eol lf
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: msys2/setup-msys2@v2
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
         with:
           msystem: MINGW64
           update: true
@@ -165,7 +170,7 @@ jobs:
           .\readpst.exe -V
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: readpst-win64
           path: dist/
