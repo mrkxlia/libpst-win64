@@ -2071,6 +2071,14 @@ static pst_mapi_object* pst_parse_block(pst_file *pf, uint64_t block_id, pst_id2
             }
             x++;
         }
+        // The element count was pre-set to num_mapi_elements, but the loop
+        // above breaks early when the list runs past the end of the block (a
+        // crafted .pst can claim more elements than the data holds). Trailing
+        // slots then stay NULL; correct the count to the number actually
+        // populated so consumers (pst_process) never dereference a NULL
+        // element. (found by fuzzing: null-deref in pst_process at the
+        // list->elements[x] access)
+        mo_ptr->count_elements = x;
         // ind2_ptr is only set for 0x7cec blocks; for 0xbcec blocks it stays
         // NULL and this row-advance is unused. Guard it so we never do pointer
         // arithmetic on a NULL base (undefined behavior, and NULL+0 trips UBSan
@@ -4813,7 +4821,7 @@ void pst_rfc2231(pst_string *str) {
     }
     int n = strlen(str->str) + 2*needs + 15;
     char *buffer = pst_malloc(n);
-    strcpy(buffer, "utf-8''");
+    memcpy(buffer, "utf-8''", sizeof("utf-8''"));  // includes the NUL
     x = (int8_t *)str->str;
     const uint8_t *y = (uint8_t *)str->str;
     char *z = buffer;

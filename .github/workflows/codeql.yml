@@ -1,0 +1,59 @@
+name: CodeQL (advisory)
+
+# Advisory SAST: uploads findings to the repository's code-scanning tab.
+# Non-gating by policy — this workflow is simply not part of any required
+# checks; do not add continue-on-error (that would hide real analysis
+# failures rather than findings).
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '23 4 * * 1'   # weekly, off-peak
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: c-cpp
+            build-mode: manual
+          - language: python
+            build-mode: none
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: initialize CodeQL
+        uses: github/codeql-action/init@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3.37.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: build the C core (manual build mode)
+        if: matrix.language == 'c-cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool \
+            autoconf-archive gettext autopoint pkg-config zlib1g-dev libgsf-1-dev
+          autoreconf -fiv
+          ./configure --enable-python=no --enable-dii=no
+          make -C src
+
+      - name: analyze
+        uses: github/codeql-action/analyze@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3.37.1
+        with:
+          category: "/language:${{ matrix.language }}"

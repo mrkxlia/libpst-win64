@@ -122,11 +122,15 @@
     #include <process.h>
     #undef gmtime_r
     #define gmtime_r(tp,tmp) (gmtime(tp)?(*(tmp)=*gmtime(tp),(tmp)):0)
-    #define ctime_r(tp,tmp) (ctime(tp)?(strcpy((tmp),ctime((tp))),(tmp)):0)
+    // ctime() output is at most 26 bytes including the NUL
+    // ("Www Mmm dd hh:mm:ss yyyy\n"); callers pass >=30-byte buffers per the
+    // timeconv.h contract, and the bound keeps the copy from ever exceeding it.
+    #define ctime_r(tp,tmp) (ctime(tp)?(snprintf((tmp),26,"%s",ctime((tp))),(tmp)):0)
 #else
     #ifdef __DJGPP__
         #define gmtime_r(tp,tmp) (gmtime(tp)?(*(tmp)=*gmtime(tp),(tmp)):0)
-        #define ctime_r(tp,tmp) (ctime(tp)?(strcpy((tmp),ctime((tp))),(tmp)):0)
+        // Bounded like the _WIN32 fallback above: ctime() output <= 26 bytes.
+        #define ctime_r(tp,tmp) (ctime(tp)?(snprintf((tmp),26,"%s",ctime((tp))),(tmp)):0)
         #define fseeko(stream, offset, whence) fseek(stream, (long)offset, whence)
         #define ftello ftell
     #endif

@@ -105,8 +105,10 @@ Type stubs (`_core.pyi` + `py.typed`) ship in the wheel, so editors and `mypy` s
 - **Deterministic gate:** `.github/workflows/security.yml` replays a pinned corpus of adversarial reproducers **plus the valid PST fixture** under ASAN+UBSan on every PR — this is the hard memory-safety gate.
 - **Exploratory fuzzing:** short libFuzzer runs on each PR (non-gating; new crashes are uploaded as artifacts) and a scheduled ClusterFuzzLite batch (`.github/workflows/cflite_batch.yml`). A registration-ready OSS-Fuzz project lives in [`oss-fuzz/`](oss-fuzz/).
 - **Coverage:** a valid PST fixture (`tests/fixtures/dist-list.pst`) lifted core-parser region coverage from ~7.5% to ~35%, which is what surfaced the bugs fixed here.
+- **Static analysis & supply chain:** advisory CodeQL (`.github/workflows/codeql.yml`) plus cppcheck/clang-tidy reports; GitHub Actions and the fetched zlib are pinned to commit SHAs, with Dependabot keeping the pins current.
+- **Reporting:** see [`SECURITY.md`](SECURITY.md) for private vulnerability reporting and the security policy.
 
-> 日本語: 確定ゲートは「固定再現コーパス + 有効 PST を ASAN/UBSan で再生」。PR 時の短時間 fuzz は非ゲート（クラッシュはアーティファクト化）、深掘りは ClusterFuzzLite の定期実行と、登録準備済みの OSS-Fuzz 設定（[`oss-fuzz/`](oss-fuzz/)）が担います。
+> 日本語: 確定ゲートは「固定再現コーパス + 有効 PST を ASAN/UBSan で再生」。PR 時の短時間 fuzz は非ゲート（クラッシュはアーティファクト化）、深掘りは ClusterFuzzLite の定期実行と、登録準備済みの OSS-Fuzz 設定（[`oss-fuzz/`](oss-fuzz/)）が担います。静的解析は CodeQL(参考情報) + cppcheck/clang-tidy。GitHub Actions と取得 zlib はコミット SHA 固定で Dependabot が追従。脆弱性の報告方法は [`SECURITY.md`](SECURITY.md) を参照してください。
 
 ---
 

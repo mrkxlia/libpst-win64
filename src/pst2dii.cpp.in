@@ -16,6 +16,11 @@ using namespace std;
 #include "define.h"
 #include "lzfu.h"
 
+// for the fork+execv convert invocation in close_pdf(); pst2dii is only
+// built where ImageMagick and libgd exist, i.e. POSIX platforms.
+#include <unistd.h>
+#include <sys/wait.h>
+
 struct file_ll {
     string  name;
     int32_t stored_count;
@@ -48,7 +53,7 @@ pst_file pstfile;                   // the input pst file
 bool     pdf_open = false;          // is pdf writer started
 char*    pst_folder;                // current folder name
 int      page_sequence;             // current page number
-string   conversion;                // conversion command
+vector<string>  conversion;         // argv for the convert invocation
 vector<string>  png_names;
 
 // png writer globals
@@ -176,20 +181,27 @@ static string write_separate_attachment(string fname, pst_item_attach* current_a
     check_filename(fname);
     const char* f_name = fname.c_str();
     DEBUG_INFO(("dirname=%s, pathname=%s, filename=%s\n", output_directory, f_name, attach_filename));
-    int len = strlen(output_directory) + 1 + strlen(f_name) + 15;
+    size_t len = strlen(output_directory) + 1 + strlen(f_name) + 15;
     if (!attach_filename) {
         // generate our own (dummy) filename for the attachment
         temp = (char*)pst_malloc(len);
-        sprintf(temp, "%s/%s_attach%i", output_directory, f_name, attach_num);
+        snprintf(temp, len, "%s/%s_attach%i", output_directory, f_name, attach_num);
     } else {
+        // Sanitize the attachment name before building the output path: the
+        // name comes from the untrusted .pst and may contain path separators
+        // or "..", which would otherwise let a crafted file escape the output
+        // directory (same fix as readpst's write_separate_attachment).
+        string safe_attach(attach_filename);
+        check_filename(safe_attach);
         // have an attachment name, make sure it's unique
-        temp = (char*)pst_malloc(len+strlen(attach_filename));
+        size_t tlen = len + safe_attach.length();
+        temp = (char*)pst_malloc(tlen);
         do {
             if (fp) fclose(fp);
             if (x == 0)
-                sprintf(temp, "%s/%s_%s", output_directory, f_name, attach_filename);
+                snprintf(temp, tlen, "%s/%s_%s", output_directory, f_name, safe_attach.c_str());
             else
-                sprintf(temp, "%s/%s_%s-%i", output_directory, f_name, attach_filename, x);
+                snprintf(temp, tlen, "%s/%s_%s-%i", output_directory, f_name, safe_attach.c_str(), x);
         } while ((fp = fopen(temp, "r")) && ++x < 99999999);
         if (x > 99999999) {
             DIE(("error finding attachment name. exhausted possibilities to %s\n", temp));
@@ -223,7 +235,7 @@ static void print_pdf_short(const char *line, int len, int color)
     strex.charmap     = 0;
     strex.hdpi        = DPI;
     strex.vdpi        = DPI;
-    char xline[len+1];
+    char *xline = (char*)pst_malloc(len+1);
     memcpy(xline, line, len);
     xline[len] = '\0';
     char *p;
@@ -242,6 +254,7 @@ static void print_pdf_short(const char *line, int len, int color)
     if (err) printf("%s", err);
     x_position += (brect[2]-brect[6]);
     col_number += len;
+    free(xline);
 }
 
 
@@ -352,7 +365,7 @@ static void close_png()
         }
         gdImageDestroy(image); // free memory
         png_names.push_back(fn);
-        conversion += string(" ") + fn;
+        conversion.push_back(fn);
         free(fn);
     }
 }
@@ -363,16 +376,20 @@ static void open_pdf(char *line)
 {
     pst_folder    = line;
     page_sequence = 0;
-    conversion    = string(convert);
+    conversion.clear();
+    conversion.push_back(convert);
     png_names.clear();
     open_png();
     /* Note; allocating the largest string length to pdf_name */
     int len = snprintf(0, 0, "%s/dii%06d.pdf", output_directory, email_sequence+1);
     if( len <= 0 ) return;
-    pdf_name = (char*)pst_malloc(len);
-    snprintf(pdf_name, len, "dii%06d", ++email_sequence);
+    // snprintf(0,0,...) returns the length excluding the NUL terminator, so
+    // the buffer (and the bound passed below) needs one extra byte.
+    size_t pdf_name_size = (size_t)len + 1;
+    pdf_name = (char*)pst_malloc(pdf_name_size);
+    snprintf(pdf_name, pdf_name_size, "dii%06d", ++email_sequence);
     fprintf(dii_file, "\n@T %s\n", pdf_name);
-    snprintf(pdf_name, len, "%s/dii%06d.pdf", output_directory, email_sequence);
+    snprintf(pdf_name, pdf_name_size, "%s/dii%06d.pdf", output_directory, email_sequence);
 }
 
 
@@ -380,8 +397,22 @@ static void close_pdf();
 static void close_pdf()
 {
     close_png();
-    conversion += string(" ") + pdf_name;
-    (void)system(conversion.c_str());
+    conversion.push_back(pdf_name);
+    // Run convert directly (fork+execv with an argv array) instead of
+    // system(): no shell is involved, so the command line cannot be
+    // reinterpreted (and spaces in the output directory now work).
+    pid_t pid = fork();
+    if (pid == 0) {
+        vector<char*> argv;
+        for (size_t i = 0; i < conversion.size(); i++)
+            argv.push_back(const_cast<char*>(conversion[i].c_str()));
+        argv.push_back(NULL);
+        execv(convert, argv.data());
+        _exit(127);
+    } else if (pid > 0) {
+        int status;
+        (void)waitpid(pid, &status, 0);   // status intentionally ignored, as system()'s was
+    }
     for (vector<string>::iterator i=png_names.begin(); i!=png_names.end(); i++) {
         remove((*i).c_str());
     }
@@ -418,8 +449,8 @@ static string extract_header(char *headers, const char *field);
 static string extract_header(char *headers, const char *field)
 {
     string rc;
-    int len = strlen(field) + 4;
-    char f[len];
+    size_t len = strlen(field) + 4;
+    char *f = (char*)pst_malloc(len);
     snprintf(f, len, "\n%s: ", field);
     char *p = strstr(headers, f);
     if (p) {
@@ -434,6 +465,7 @@ static string extract_header(char *headers, const char *field)
             rc = string(p);
         }
     }
+    free(f);
     return rc;
 }
 
@@ -595,6 +627,7 @@ static void create_enter_dir(file_ll &f, file_ll *parent, pst_item *item)
 static void close_enter_dir(file_ll &f);
 static void close_enter_dir(file_ll &f)
 {
+    (void)f;
 }
 
 

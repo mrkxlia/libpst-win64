@@ -427,9 +427,9 @@ int main(int argc, char* const* argv) {
         switch (c) {
         case 'a':
             if (optarg) {
-                int n = strlen(optarg);
+                size_t n = strlen(optarg);
                 acceptable_extensions = (char*)pst_malloc(n+2);
-                strcpy(acceptable_extensions, optarg);
+                memcpy(acceptable_extensions, optarg, n+1);
                 acceptable_extensions[n+1] = '\0';  // double null terminates array of non-empty null terminated strings.
                 char *p = acceptable_extensions;
                 while (*p) {
@@ -644,8 +644,9 @@ int main(int argc, char* const* argv) {
                 temp++; // get past the "\\"
         else
             temp++; // get past the "/"
-        item->file_as.str = (char*)pst_malloc(strlen(temp)+1);
-        strcpy(item->file_as.str, temp);
+        size_t l = strlen(temp)+1;
+        item->file_as.str = (char*)pst_malloc(l);
+        memcpy(item->file_as.str, temp, l);
         item->file_as.is_utf8 = 1;
         DEBUG_INFO(("file_as was blank, so am using %s\n", item->file_as.str));
     }
@@ -769,8 +770,9 @@ void mk_kmail_dir(char *fname) {
     char *dir, *index;
     int x;
     DEBUG_ENT("mk_kmail_dir");
-    dir = pst_malloc(strlen(fname)+strlen(OUTPUT_KMAIL_DIR_TEMPLATE)+1);
-    sprintf(dir, OUTPUT_KMAIL_DIR_TEMPLATE, fname);
+    size_t dlen = strlen(fname)+strlen(OUTPUT_KMAIL_DIR_TEMPLATE)+1;
+    dir = pst_malloc(dlen);
+    snprintf(dir, dlen, OUTPUT_KMAIL_DIR_TEMPLATE, fname);
     check_filename(dir);
     if (D_MKDIR(dir)) {
         if (errno != EEXIST) {  // not an error because it exists
@@ -790,8 +792,9 @@ void mk_kmail_dir(char *fname) {
     // cleaned (a raw name with separators/".." would otherwise traverse).
     char *safe_fname = strdup(fname);
     check_filename(safe_fname);
-    index = pst_malloc(strlen(safe_fname)+strlen(KMAIL_INDEX)+1);
-    sprintf(index, KMAIL_INDEX, safe_fname);
+    size_t ilen = strlen(safe_fname)+strlen(KMAIL_INDEX)+1;
+    index = pst_malloc(ilen);
+    snprintf(index, ilen, KMAIL_INDEX, safe_fname);
     unlink(index);
     free(index);
     free(safe_fname);
@@ -964,7 +967,7 @@ void mk_separate_file(struct file_ll *f, int32_t t, char *extension, int openit)
     if (f->item_count > 999999999) { // bigger than nine 9's
         DIE(("mk_separate_file: The number of emails in this folder has become too high to handle\n"));
     }
-    sprintf(f->name[t], "%" PRIi32 "%s", f->item_count, extension);
+    snprintf(f->name[t], file_name_len, "%" PRIi32 "%s", f->item_count, extension);
     check_filename(f->name[t]);
     if (openit) {
         if (!(f->output[t] = fopen(f->name[t], "w"))) {
@@ -1098,8 +1101,9 @@ void write_separate_attachment(char f_name[], pst_item_attach* attach, int attac
     check_filename(f_name);
     if (!attach_filename) {
         // generate our own (dummy) filename for the attachment
-        temp = pst_malloc(strlen(f_name)+15);
-        sprintf(temp, "%s-attach%i", f_name, attach_num);
+        size_t tlen = strlen(f_name)+15;
+        temp = pst_malloc(tlen);
+        snprintf(temp, tlen, "%s-attach%i", f_name, attach_num);
     } else {
         // Sanitize the attachment name before building the output path: the
         // name comes from the untrusted .pst and may contain path separators
@@ -1108,13 +1112,14 @@ void write_separate_attachment(char f_name[], pst_item_attach* attach, int attac
         char *safe_attach = strdup(attach_filename);
         check_filename(safe_attach);
         // have an attachment name, make sure it's unique
-        temp = pst_malloc(strlen(f_name)+strlen(safe_attach)+15);
+        size_t tlen = strlen(f_name)+strlen(safe_attach)+15;
+        temp = pst_malloc(tlen);
         do {
             if (fp) fclose(fp);
             if (x == 0)
-                sprintf(temp, "%s-%s", f_name, safe_attach);
+                snprintf(temp, tlen, "%s-%s", f_name, safe_attach);
             else
-                sprintf(temp, "%s-%s-%i", f_name, safe_attach, x);
+                snprintf(temp, tlen, "%s-%s-%i", f_name, safe_attach, x);
         } while ((fp = fopen(temp, "r")) && ++x < 99999999);
         free(safe_attach);
         if (x > 99999999) {
@@ -1256,7 +1261,7 @@ char *rfc2231_string(char *inp) {
     }
     int n = strlen(inp) + 2*needs + 15;
     char *buffer = pst_malloc(n);
-    strcpy(buffer, "utf-8''");
+    memcpy(buffer, "utf-8''", sizeof("utf-8''"));  // includes the NUL
     x = (int8_t *)inp;
     const uint8_t *y = (uint8_t *)inp;
     char *z = buffer;
@@ -2325,9 +2330,8 @@ void write_appointment(FILE* f_output, pst_item* item)
                 for (i=0; i<7; i++) {
                     int bit = 1 << i;
                     if (bit & rdata->bydaymask) {
-                        char temp[49];
-                        snprintf(temp, sizeof(temp), "%s%s%s", byday, (empty) ? ";BYDAY=" : ";", days[i]);
-                        strcpy(byday, temp);
+                        size_t used = strlen(byday);
+                        snprintf(byday+used, sizeof(byday)-used, "%s%s", (empty) ? ";BYDAY=" : ";", days[i]);
                         empty = 0;
                     }
                 }
@@ -2390,8 +2394,9 @@ void create_enter_dir(struct file_ll* f, pst_item *item)
     memset(f, 0, sizeof(*f));
     f->stored_count = (item->folder) ? item->folder->item_count : 0;
     pst_convert_utf8(item, &item->file_as);
-    f->dname = (char*) pst_malloc(strlen(item->file_as.str)+1);
-    strcpy(f->dname, item->file_as.str);
+    size_t dlen = strlen(item->file_as.str)+1;
+    f->dname = (char*) pst_malloc(dlen);
+    memcpy(f->dname, item->file_as.str, dlen);
 
     DEBUG_ENT("create_enter_dir");
     if (mode == MODE_KMAIL) {
@@ -2399,8 +2404,9 @@ void create_enter_dir(struct file_ll* f, pst_item *item)
         mk_kmail_dir(item->file_as.str);
         for (t=0; t<PST_TYPE_MAX; t++) {
             if (t == reduced_item_type(t)) {
-                f->name[t] = (char*) pst_malloc(strlen(item->file_as.str)+strlen(OUTPUT_TEMPLATE)+30);
-                sprintf(f->name[t], OUTPUT_TEMPLATE, item->file_as.str, item_type_to_name(t));
+                size_t nlen = strlen(item->file_as.str)+strlen(OUTPUT_TEMPLATE)+30;
+                f->name[t] = (char*) pst_malloc(nlen);
+                snprintf(f->name[t], nlen, OUTPUT_TEMPLATE, item->file_as.str, item_type_to_name(t));
             }
         }
     } else if (mode == MODE_RECURSE) {
@@ -2435,8 +2441,9 @@ void create_enter_dir(struct file_ll* f, pst_item *item)
         int32_t t;
         for (t=0; t<PST_TYPE_MAX; t++) {
             if (t == reduced_item_type(t)) {
-                f->name[t] = (char*) pst_malloc(strlen(item->file_as.str)+strlen(OUTPUT_TEMPLATE)+30);
-                sprintf(f->name[t], OUTPUT_TEMPLATE, item->file_as.str, item_type_to_name(t));
+                size_t nlen = strlen(item->file_as.str)+strlen(OUTPUT_TEMPLATE)+30;
+                f->name[t] = (char*) pst_malloc(nlen);
+                snprintf(f->name[t], nlen, OUTPUT_TEMPLATE, item->file_as.str, item_type_to_name(t));
             }
         }
     }
@@ -2447,14 +2454,15 @@ void create_enter_dir(struct file_ll* f, pst_item *item)
             if (f->name[t]) {
                 if (!overwrite) {
                     int x = 0;
-                    char *temp = (char*) pst_malloc (strlen(f->name[t])+10); //enough room for 10 digits
+                    size_t tsize = strlen(f->name[t])+10; //enough room for 10 digits
+                    char *temp = (char*) pst_malloc (tsize);
 
-                    sprintf(temp, "%s", f->name[t]);
+                    snprintf(temp, tsize, "%s", f->name[t]);
                     check_filename(temp);
                     while ((f->output[t] = fopen(temp, "r"))) {
                         DEBUG_INFO(("need to increase filename because one already exists with that name\n"));
                         x++;
-                        sprintf(temp, "%s%08d", f->name[t], x);
+                        snprintf(temp, tsize, "%s%08d", f->name[t], x);
                         DEBUG_INFO(("- bump file name and try \"%s\"\n", temp));
                         if (x == 99999999) {
                             DIE(("create_enter_dir: Why can I not create a folder %s? I have tried %i extensions...\n", f->name[t], x));

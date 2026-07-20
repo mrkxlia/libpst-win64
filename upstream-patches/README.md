@@ -29,6 +29,9 @@ replayed under ASAN/UBSan by `.github/workflows/security.yml`.
 | String compare | `pst_stricmp` / `pst_strincmp` (libpst.c) | NULL deref on absent class field / failed `strdup` | — |
 | Little-endian accessors | `PST_LE_GET_*` (define.h) | signed-shift UB (`byte << 24/32..56`) | `tests/test_le_macros.c` |
 | vbuf | `pst_vbset` / `pst_vbappend` (vbuf.c) | UB — NULL source passed to `memcpy` | — |
+| MAPI elements | `pst_parse_block` / `pst_process` (libpst.c) | NULL deref — element count left at the claimed total when the element list is truncated, so `pst_process` dereferences NULL tail slots | `pst_process_null_mapi_element` |
+| Output paths | `write_separate_attachment` (pst2dii.cpp.in) | Path traversal — attacker-controlled attachment filename concatenated into the `fopen(..., "wb")` path unsanitized (same class as the readpst fix already merged) | — |
+| PDF naming | `open_pdf` (pst2dii.cpp.in) | Off-by-one — `pdf_name` allocated without room for the NUL (`snprintf(0,0,...)` excludes it), truncating the `.pdf` extension | — |
 
 Earlier hardening already merged on this fork (RCE-class heap overflow in
 `pst_read_block_size`/`pst_ff_getIDblock`, `LIST_COPY_*` type-confusion OOB
