@@ -18,14 +18,16 @@ extern "C" {
 #endif
 
 
-// switch to maximal packing for all structures in the libpst interface
-// this is reverted at the end of this file
-#ifdef _MSC_VER
-    #pragma pack(push, 1)
-#endif
-#if defined(__GNUC__) || defined (__SUNPRO_C) || defined(__SUNPRO_CC)
-    #pragma pack(1)
-#endif
+// The structures in this public interface are in-memory runtime types
+// (linked-list nodes, parsed item trees, the file handle). They are never
+// overlaid on raw .pst bytes — all on-disk decoding uses the separately
+// packed structs in libpst.c together with the PST_LE_GET_* byte accessors
+// in define.h. They are therefore left at natural alignment: packing the
+// whole interface (as upstream did) put every pointer field at an unaligned
+// offset, which is undefined behaviour on strict-alignment targets and made
+// UBSan's alignment check unusable. The one struct that does touch file
+// bytes, pst_entryid, is packed individually below (its layout is already
+// natural, so this only freezes intent).
 
 
 #define PST_TYPE_NOTE        1
@@ -99,11 +101,25 @@ extern "C" {
 #define PST_FLAG_NRN_PENDING	0x200
 
 
-typedef struct pst_entryid {
-    int32_t u1;
-    char entryid[16];
-    uint32_t id;
-} pst_entryid;
+// Overlaid on MAPI element bytes from the file (see LIST_COPY_ENTRYID in
+// libpst.c); keep it packed so its on-disk layout is fixed. The fields are
+// already naturally aligned, so this does not change the layout — it only
+// makes the on-disk contract explicit now that the header-wide pack is gone.
+#if defined(_MSC_VER)
+    #pragma pack(push, 1)
+    typedef struct pst_entryid {
+        int32_t u1;
+        char entryid[16];
+        uint32_t id;
+    } pst_entryid;
+    #pragma pack(pop)
+#else
+    typedef struct pst_entryid {
+        int32_t u1;
+        char entryid[16];
+        uint32_t id;
+    } __attribute__((packed)) pst_entryid;
+#endif
 
 
 typedef struct pst_index_ll {
@@ -1157,14 +1173,8 @@ void            pst_free_recurrence(pst_recurrence* r);
 
 
 
-// switch from maximal packing back to default packing
-// undo the packing from the beginning of this file
-#ifdef _MSC_VER
-    #pragma pack(pop)
-#endif
-#if defined(__GNUC__) || defined (__SUNPRO_C) || defined(__SUNPRO_CC)
-    #pragma pack()
-#endif
+// (The interface-wide pack that upstream applied here has been removed; only
+// pst_entryid above is packed, individually.)
 
 
 

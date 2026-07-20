@@ -4,11 +4,8 @@
 # fuzz harnesses against the C core with the fuzzing engine and sanitizer
 # flags supplied by the environment ($CC/$CFLAGS/$LIB_FUZZING_ENGINE).
 
-# libpst.h wraps every struct (including in-memory trees) in #pragma pack(1),
-# so UBSan's alignment check fires on almost every field access on x86_64
-# where those loads are safe. Exclude just that check; keep everything else.
-export CFLAGS="${CFLAGS:-} -fno-sanitize=alignment"
-export CXXFLAGS="${CXXFLAGS:-} -fno-sanitize=alignment"
+# The interface-wide #pragma pack(1) has been removed from libpst.h, so the
+# public structs are naturally aligned and UBSan's alignment check is left on.
 
 # Generate config.h via the project's own feature detection.
 autoreconf -fiv

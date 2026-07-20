@@ -21,9 +21,13 @@ AC_USE_SYSTEM_EXTENSIONS
 #  6. libtool will build libpst.so.x.y.z where the SONAME is libpst.so.x
 #     and x=current-age, y=age, z=revision
 
-libpst_version_info='5:18:1'
+#  Removing the interface-wide #pragma pack(1) from libpst.h changes the
+#  in-memory layout (sizeof/offsets) of the public structs — a binary-
+#  incompatible but source-compatible change. Per rules 3 & 5 above:
+#  current++, revision=0, age=0. So 5:18:1 -> 6:0:0, giving soname libpst.so.6.
+libpst_version_info='6:0:0'
 AC_SUBST(LIBPST_VERSION_INFO, [$libpst_version_info])
-libpst_so_major='4'
+libpst_so_major='6'
 AC_SUBST(LIBPST_SO_MAJOR, [$libpst_so_major])
 
 # libpst
@@ -58,6 +62,7 @@ AC_SUBST(LIBPST_SO_MAJOR, [$libpst_so_major])
 # 0.6.74    libpst.so.4     libpst.so.4.1.16
 # 0.6.75    libpst.so.4     libpst.so.4.1.17
 # 0.6.76    libpst.so.4     libpst.so.4.1.18
+# (fork)    libpst.so.6     libpst.so.6.0.0   # dropped interface-wide pack(1)
 
 
 

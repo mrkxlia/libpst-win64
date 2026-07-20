@@ -56,16 +56,12 @@ jobs:
       - name: build harnesses
         run: |
           set -x
-          # NOTE on -fno-sanitize=alignment: libpst.h wraps the ENTIRE public
-          # interface, including in-memory trees (pst_desc_tree, pst_item,
-          # pst_file), in `#pragma pack(1)`. Every pointer field therefore sits
-          # at an unaligned offset, so UBSan's alignment check fires on almost
-          # every access. On x86_64 these loads are safe; the check is excluded
-          # so it does not drown out genuine findings. The packing is a real
-          # portability risk on strict-alignment targets, but removing it is an
-          # ABI change to the public headers and is tracked as a reported issue
-          # rather than changed here.
-          SAN="-fsanitize=fuzzer,address,undefined -fno-sanitize=alignment -fno-sanitize-recover=undefined"
+          # The interface-wide #pragma pack(1) was removed from libpst.h, so
+          # the public structs are naturally aligned and UBSan's alignment
+          # check is now usable (the only remaining packed struct, pst_entryid,
+          # is compiler-handled). The check is left ON so genuine unaligned
+          # accesses on strict-alignment targets are caught.
+          SAN="-fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined"
           clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SAN \
             fuzz/fuzz_lzfu.c src/lzfu.c src/debug.c -o fuzz_lzfu
           clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SAN \
@@ -149,10 +145,10 @@ jobs:
         run: |
           # A libFuzzer binary given file arguments replays each file once
           # through LLVMFuzzerTestOneInput, so the same harnesses double as
-          # sanitizer replay drivers for the pinned corpus.
-          # -fno-sanitize=alignment: see the fuzz job for why the packed
-          # public structs make the alignment check unusable here.
-          SANF="-fsanitize=fuzzer,address,undefined -fno-sanitize=alignment -fno-sanitize-recover=undefined"
+          # sanitizer replay drivers for the pinned corpus. The alignment
+          # check is enabled (the interface-wide pack(1) is gone); see the
+          # fuzz job.
+          SANF="-fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined"
           clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SANF \
             fuzz/fuzz_lzfu.c src/lzfu.c src/debug.c -o replay_lzfu
           clang -g -O1 -DHAVE_CONFIG_H -I . -I src $SANF \
@@ -168,7 +164,7 @@ jobs:
           # little-endian accessors (src/define.h). -I src provides define.h,
           # -I . provides the generated config.h.
           clang -fsanitize=undefined -fno-sanitize-recover=undefined \
-            -fno-sanitize=alignment -DHAVE_CONFIG_H -I src -I . \
+            -DHAVE_CONFIG_H -I src -I . \
             tests/test_le_macros.c -o test_le_macros
           ./test_le_macros
 
@@ -265,10 +261,9 @@ jobs:
 
       - name: build coverage-instrumented walk harness
         run: |
-          # Source-based coverage + libFuzzer replay driver. -fno-sanitize=alignment
-          # for the same packed-struct reason documented in the fuzz job.
+          # Source-based coverage + libFuzzer replay driver.
           clang -g -O0 -DHAVE_CONFIG_H -I . -I src \
-            -fsanitize=fuzzer -fno-sanitize=alignment \
+            -fsanitize=fuzzer \
             -fprofile-instr-generate -fcoverage-mapping \
             fuzz/fuzz_pst_walk.c $COMMON_SRCS -lz -o cov_walk
 
