@@ -1,3 +1,4 @@
+fork    2026-07-20 Security hardening: fix pst2dii attachment path traversal and a fuzz-found NULL deref on truncated MAPI element lists; replace unbounded strcpy/sprintf with bounded copies; drop the interface-wide pack(1) from libpst.h (soname libpst.so.6); pin CI dependencies to commit SHAs; add SECURITY.md, CodeQL, Dependabot, and OpenSSF Scorecard.
 0.6.76  2021-03-27 Stuart C. Naifeh - fix rfc2231 encoding when saving messages to .eml and .msg formats.
 0.6.75  2020-03-22 Markus Schnalke - fix from Debian for vcard version format.
 0.6.74  2020-01-12 Paul Wise - many changes for Debian.
